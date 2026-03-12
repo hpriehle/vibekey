@@ -1,0 +1,833 @@
+#!/usr/bin/env python3
+"""
+vibekey — CLI for setting up and managing your VibeKey keyboard
+===============================================================
+
+Commands:
+    vibekey setup       Guided first-time onboarding
+    vibekey flash       Build and upload firmware to ESP32
+    vibekey map         Remap button keys (interactive or CLI)
+    vibekey status      Show device info and current mappings
+    vibekey monitor     Open serial monitor (live debug output)
+    vibekey ports       List available serial ports
+    vibekey reset       Reset key mappings to defaults
+    vibekey keys        Show all available key names
+    vibekey help        Show this help
+
+Run 'vibekey setup' to get started with a new build.
+"""
+
+import os
+import sys
+import time
+import shutil
+import subprocess
+import argparse
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+FIRMWARE_DIR = os.path.join(SCRIPT_DIR, "firmware")
+PIO_INI = os.path.join(SCRIPT_DIR, "platformio.ini")
+SRC_DIR = os.path.join(SCRIPT_DIR, "src")
+BAUD = 115200
+
+# ─── Key lookup tables ───────────────────────────────────────────
+
+KEY_MAP = {
+    # Letters
+    "a": 97, "b": 98, "c": 99, "d": 100, "e": 101, "f": 102,
+    "g": 103, "h": 104, "i": 105, "j": 106, "k": 107, "l": 108,
+    "m": 109, "n": 110, "o": 111, "p": 112, "q": 113, "r": 114,
+    "s": 115, "t": 116, "u": 117, "v": 118, "w": 119, "x": 120,
+    "y": 121, "z": 122,
+    # Numbers
+    "0": 48, "1": 49, "2": 50, "3": 51, "4": 52,
+    "5": 53, "6": 54, "7": 55, "8": 56, "9": 57,
+    # Special
+    "enter": 176, "return": 176, "esc": 177, "escape": 177,
+    "backspace": 178, "tab": 179, "space": 32, "caps_lock": 193,
+    "insert": 218, "delete": 214, "home": 212, "end": 215,
+    "page_up": 213, "page_down": 216,
+    "right": 217, "right_arrow": 217,
+    "left": 218, "left_arrow": 218,
+    "down": 219, "down_arrow": 219,
+    "up": 220, "up_arrow": 220,
+    # F-keys
+    "f1": 194, "f2": 195, "f3": 196, "f4": 197,
+    "f5": 198, "f6": 199, "f7": 200, "f8": 201,
+    "f9": 202, "f10": 203, "f11": 204, "f12": 205,
+    "f13": 206, "f14": 207, "f15": 208, "f16": 209,
+    "f17": 210, "f18": 211, "f19": 212, "f20": 213,
+    "f21": 214, "f22": 215, "f23": 216, "f24": 217,
+    # Modifiers
+    "left_ctrl": 128, "left_shift": 129, "left_alt": 130, "left_gui": 131,
+    "right_ctrl": 132, "right_shift": 133, "right_alt": 134, "right_gui": 135,
+    # Media
+    "mute": 226, "media_mute": 226,
+    "volume_up": 233, "vol_up": 233, "media_volume_up": 233,
+    "volume_down": 234, "vol_down": 234, "media_volume_down": 234,
+    "play_pause": 205, "media_play_pause": 205,
+    "next_track": 181, "media_next_track": 181,
+    "prev_track": 182, "previous_track": 182, "media_previous_track": 182,
+    "stop": 183, "media_stop": 183,
+}
+
+CODE_TO_NAME = {}
+for _name, _code in KEY_MAP.items():
+    if _code not in CODE_TO_NAME or len(_name) < len(CODE_TO_NAME[_code]):
+        CODE_TO_NAME[_code] = _name
+CODE_TO_NAME.update({
+    226: "mute", 233: "volume_up", 234: "volume_down", 205: "play_pause",
+    181: "next_track", 182: "prev_track", 176: "enter", 177: "esc",
+    178: "backspace", 179: "tab", 32: "space",
+})
+
+NUM_BUTTONS = 3
+
+# ─── Helpers ──────────────────────────────────────────────────────
+
+def code_to_display(code):
+    if code in CODE_TO_NAME:
+        return CODE_TO_NAME[code]
+    if 32 <= code <= 126:
+        return chr(code)
+    return f"code_{code}"
+
+
+def resolve_key(name):
+    """Resolve a key name or number to a code, or None."""
+    name = name.strip().lower()
+    if name in KEY_MAP:
+        return KEY_MAP[name]
+    if len(name) == 1 and 32 <= ord(name) <= 126:
+        return ord(name)
+    if name.isdigit() and int(name) <= 255:
+        return int(name)
+    return None
+
+
+def print_key_categories():
+    categories = {
+        "Media":     ["mute", "volume_up", "volume_down", "play_pause",
+                      "next_track", "prev_track", "stop"],
+        "Common":    ["enter", "esc", "backspace", "tab", "space",
+                      "delete", "insert", "home", "end", "page_up", "page_down"],
+        "Arrows":    ["up", "down", "left", "right"],
+        "F-Keys":    [f"f{i}" for i in range(1, 25)],
+        "Letters":   [chr(c) for c in range(97, 123)],
+        "Numbers":   [str(d) for d in range(10)],
+        "Modifiers": ["left_ctrl", "left_shift", "left_alt", "left_gui",
+                      "right_ctrl", "right_shift", "right_alt", "right_gui"],
+    }
+    for cat, keys in categories.items():
+        print(f"\n  {cat}:")
+        line = "    "
+        for k in keys:
+            if len(line) + len(k) + 2 > 72:
+                print(line)
+                line = "    "
+            line += k + "  "
+        if line.strip():
+            print(line)
+
+
+def hr():
+    print("─" * 56)
+
+
+def banner(text):
+    print()
+    print(f"  {text}")
+    hr()
+
+
+def ask(prompt, default=None):
+    if default:
+        result = input(f"  {prompt} [{default}]: ").strip()
+        return result if result else default
+    return input(f"  {prompt}: ").strip()
+
+
+def ask_yn(prompt, default=True):
+    suffix = "[Y/n]" if default else "[y/N]"
+    result = input(f"  {prompt} {suffix} ").strip().lower()
+    if not result:
+        return default
+    return result in ("y", "yes")
+
+
+def check_pyserial():
+    try:
+        import serial  # noqa: F811
+        import serial.tools.list_ports  # noqa: F811
+        return True
+    except ImportError:
+        return False
+
+
+def ensure_pyserial():
+    if check_pyserial():
+        return True
+    print("  pyserial is required for device communication.")
+    if ask_yn("Install pyserial now?"):
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyserial"],
+                              stdout=subprocess.DEVNULL)
+        print("  Installed.")
+        return True
+    return False
+
+
+def check_platformio():
+    return shutil.which("pio") is not None
+
+
+def find_port():
+    import serial.tools.list_ports
+    ports = serial.tools.list_ports.comports()
+    esp_keywords = ["CP210", "CH340", "FTDI", "ESP32", "USB Serial",
+                    "USB-SERIAL", "ACM", "ttyUSB", "cu.usb", "cu.SLAB"]
+    for port in ports:
+        desc = f"{port.description} {port.device}".upper()
+        if any(kw.upper() in desc for kw in esp_keywords):
+            return port.device
+    if ports:
+        return ports[0].device
+    return None
+
+
+def open_serial(port=None):
+    import serial as ser_module
+    port = port or find_port()
+    if not port:
+        print("  No serial port found. Is the ESP32 plugged in?")
+        sys.exit(1)
+    print(f"  Connecting to {port}...")
+    try:
+        s = ser_module.Serial(port, BAUD, timeout=1)
+    except Exception as e:
+        print(f"  Error opening {port}: {e}")
+        sys.exit(1)
+    time.sleep(1.5)
+    s.reset_input_buffer()
+    return s, port
+
+
+def send_command(ser, cmd):
+    ser.reset_input_buffer()
+    ser.write((cmd + "\n").encode())
+    time.sleep(0.3)
+    lines = []
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if ser.in_waiting:
+            line = ser.readline().decode(errors="replace").strip()
+            if line:
+                lines.append(line)
+            deadline = time.time() + 0.5
+        else:
+            time.sleep(0.05)
+    return lines
+
+
+def get_mappings(ser):
+    lines = send_command(ser, "GET")
+    for line in lines:
+        if line.startswith("MAP:"):
+            return [int(x) for x in line[4:].split(",")]
+    return None
+
+
+def set_mappings(ser, codes):
+    cmd = "SET " + ",".join(str(c) for c in codes)
+    lines = send_command(ser, cmd)
+    return any(l == "OK" for l in lines)
+
+
+def is_vibekey(ser):
+    lines = send_command(ser, "PING")
+    return any("PONG:vibekey" in l for l in lines)
+
+
+def print_mappings(codes):
+    for i, code in enumerate(codes):
+        name = code_to_display(code)
+        print(f"  Button {i + 1}  ->  {name}  (code {code})")
+
+
+def do_flash(env="esp32s3", upload=True, monitor=False):
+    if not check_platformio():
+        print("  PlatformIO (pio) is not installed.")
+        print("  Install with: pip install platformio")
+        sys.exit(1)
+
+    os.makedirs(SRC_DIR, exist_ok=True)
+    shutil.copy2(os.path.join(FIRMWARE_DIR, "config.h"), os.path.join(SRC_DIR, "config.h"))
+    shutil.copy2(os.path.join(FIRMWARE_DIR, "one_key_keyboard.ino"), os.path.join(SRC_DIR, "main.cpp"))
+
+    if upload:
+        print(f"  Building and uploading (env: {env})...")
+        subprocess.check_call(["pio", "run", "-e", env, "-t", "upload"], cwd=SCRIPT_DIR)
+    else:
+        print(f"  Building (env: {env})...")
+        subprocess.check_call(["pio", "run", "-e", env], cwd=SCRIPT_DIR)
+
+    if monitor:
+        print("  Opening serial monitor (Ctrl+C to exit)...")
+        subprocess.call(["pio", "device", "monitor", "-e", env], cwd=SCRIPT_DIR)
+
+
+# ─── Commands ─────────────────────────────────────────────────────
+
+def cmd_setup(args):
+    """Guided first-time onboarding."""
+    print()
+    print("╔══════════════════════════════════════════════════════╗")
+    print("║             VibeKey — First Time Setup               ║")
+    print("╚══════════════════════════════════════════════════════╝")
+    print()
+    print("  This wizard will walk you through:")
+    print("    1. Checking your tools (PlatformIO, pyserial)")
+    print("    2. Choosing your GPIO pins")
+    print("    3. Building and flashing the firmware")
+    print("    4. Pairing over Bluetooth")
+    print("    5. Mapping your 3 buttons")
+    print()
+    hr()
+
+    # ── Step 1: Check tools ──
+
+    banner("Step 1/5 — Checking tools")
+
+    # Python
+    print(f"  Python:      {sys.version.split()[0]}  OK")
+
+    # PlatformIO
+    has_pio = check_platformio()
+    if has_pio:
+        print("  PlatformIO:  found  OK")
+    else:
+        print("  PlatformIO:  NOT FOUND")
+        if ask_yn("  Install PlatformIO now?"):
+            print("  Installing PlatformIO (this may take a minute)...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "platformio"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            has_pio = check_platformio()
+            if has_pio:
+                print("  PlatformIO:  installed  OK")
+            else:
+                print("  PlatformIO installed but 'pio' not in PATH.")
+                print("  Try: python -m platformio run ...")
+                print("  Or restart your terminal and run 'vibekey setup' again.")
+                return
+        else:
+            print()
+            print("  You can also use Arduino IDE manually — see README.md.")
+            print("  Re-run 'vibekey setup' after installing PlatformIO.")
+            return
+
+    # pyserial
+    has_pyserial = check_pyserial()
+    if has_pyserial:
+        print("  pyserial:    found  OK")
+    else:
+        print("  pyserial:    NOT FOUND")
+        if ask_yn("  Install pyserial now?"):
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "pyserial"],
+                                  stdout=subprocess.DEVNULL)
+            print("  pyserial:    installed  OK")
+        else:
+            print("  pyserial is needed for key mapping. You can install it later.")
+
+    print()
+
+    # ── Step 2: GPIO pin configuration ──
+
+    banner("Step 2/5 — GPIO pin configuration")
+    print("  Default pin assignments:")
+    print("    Button 1 -> GPIO 4")
+    print("    Button 2 -> GPIO 5")
+    print("    Button 3 -> GPIO 6")
+    print("    LED      -> GPIO 2")
+    print()
+
+    custom_pins = not ask_yn("Use default pin assignments?")
+
+    if custom_pins:
+        pin1 = ask("GPIO pin for Button 1", "4")
+        pin2 = ask("GPIO pin for Button 2", "5")
+        pin3 = ask("GPIO pin for Button 3", "6")
+        led_pin = ask("GPIO pin for LED (-1 to disable)", "2")
+        print()
+
+        # Update config.h
+        config_path = os.path.join(FIRMWARE_DIR, "config.h")
+        with open(config_path, "r") as f:
+            config = f.read()
+        config = config.replace(
+            "#define BUTTON_PIN_1    4", f"#define BUTTON_PIN_1    {pin1}")
+        config = config.replace(
+            "#define BUTTON_PIN_2    5", f"#define BUTTON_PIN_2    {pin2}")
+        config = config.replace(
+            "#define BUTTON_PIN_3    6", f"#define BUTTON_PIN_3    {pin3}")
+        config = config.replace(
+            "#define LED_PIN         2", f"#define LED_PIN         {led_pin}")
+        with open(config_path, "w") as f:
+            f.write(config)
+        print(f"  Updated config.h: buttons on GPIO {pin1}/{pin2}/{pin3}, LED on GPIO {led_pin}")
+    else:
+        print("  Using defaults.")
+
+    print()
+
+    # ── Step 3: Choose board and BLE name ──
+
+    banner("Step 3/5 — Board & Bluetooth name")
+
+    print("  Which ESP32 board are you using?")
+    print("    [1] ESP32-S3 (recommended)")
+    print("    [2] Original ESP32")
+    print()
+    board_choice = ask("Board", "1")
+    env = "esp32s3" if board_choice != "2" else "esp32"
+
+    ble_name = ask("Bluetooth device name", "VibeKey")
+    if ble_name != "VibeKey":
+        config_path = os.path.join(FIRMWARE_DIR, "config.h")
+        with open(config_path, "r") as f:
+            config = f.read()
+        config = config.replace(
+            '#define BLE_DEVICE_NAME "VibeKey"',
+            f'#define BLE_DEVICE_NAME "{ble_name[:15]}"')
+        with open(config_path, "w") as f:
+            f.write(config)
+        print(f"  Bluetooth name set to: {ble_name[:15]}")
+
+    if env == "esp32":
+        # Uncomment the esp32 env in platformio.ini
+        print("  Note: using 'esp32dev' board environment.")
+
+    print()
+
+    # ── Step 4: Flash ──
+
+    banner("Step 4/5 — Flash firmware")
+    print("  Connect your ESP32 via USB now.")
+    print()
+    if not ask_yn("Ready to build and flash?"):
+        print("  Skipping flash. Run 'vibekey flash' when ready.")
+    else:
+        print()
+        try:
+            do_flash(env=env, upload=True, monitor=False)
+            print()
+            print("  Firmware uploaded successfully!")
+        except subprocess.CalledProcessError:
+            print()
+            print("  Flash failed. Common fixes:")
+            print("    - Hold the BOOT button while uploading")
+            print("    - Check that the correct port is selected")
+            print("    - Try: vibekey flash")
+            print()
+            print("  Continuing with setup...")
+
+    print()
+
+    # ── Step 5: Pair and map ──
+
+    banner("Step 5/5 — Pair and map buttons")
+    print(f'  1. On your computer/phone, go to Bluetooth settings')
+    print(f'  2. Look for "{ble_name}" and pair it')
+    print(f'  3. No PIN is required')
+    print()
+
+    if not check_pyserial():
+        print("  Install pyserial to use the key mapper:")
+        print("    pip install pyserial")
+        print("  Then run: vibekey map")
+        print()
+        print("  Default mappings:")
+        print("    Button 1 -> mute")
+        print("    Button 2 -> volume_down")
+        print("    Button 3 -> volume_up")
+    else:
+        if ask_yn("Map your buttons now?"):
+            print()
+            try:
+                ser, port = open_serial(args.port)
+                if not is_vibekey(ser):
+                    print("  Warning: device did not identify as VibeKey.")
+                    print("  It may still be booting. Continuing...\n")
+                _interactive_map(ser)
+                ser.close()
+            except Exception as e:
+                print(f"  Could not connect: {e}")
+                print("  Run 'vibekey map' once paired.")
+        else:
+            print()
+            print("  Default mappings:")
+            print("    Button 1 -> mute")
+            print("    Button 2 -> volume_down")
+            print("    Button 3 -> volume_up")
+            print()
+            print("  Run 'vibekey map' any time to change them.")
+
+    print()
+    hr()
+    print()
+    print("  Setup complete! Your VibeKey is ready to use.")
+    print()
+    print("  Useful commands:")
+    print("    vibekey map       Remap buttons")
+    print("    vibekey status    Check device status")
+    print("    vibekey flash     Reflash firmware")
+    print("    vibekey monitor   View serial debug output")
+    print("    vibekey help      Show all commands")
+    print()
+
+
+def _interactive_map(ser):
+    """Interactive key mapping loop (shared by cmd_map and cmd_setup)."""
+    codes = get_mappings(ser)
+    if codes is None:
+        print("  Could not read mappings from device.")
+        return
+
+    while True:
+        print()
+        print("  Current mappings:")
+        print("  ─────────────────────────────")
+        print_mappings(codes)
+        print()
+        print("  [1/2/3]  Change a button     [k] Show key list     [q] Done")
+        print()
+
+        choice = input("  > ").strip().lower()
+
+        if choice in ("q", "quit", "exit", "done", ""):
+            print()
+            print("  Mappings saved on device.")
+            break
+
+        elif choice == "k":
+            print_key_categories()
+
+        elif choice in ("1", "2", "3"):
+            btn_idx = int(choice) - 1
+            current = code_to_display(codes[btn_idx])
+            print(f"\n  Button {choice} is currently: {current}")
+            print("  Enter a key name (e.g. mute, f13, play_pause, a)")
+            print("  Type 'k' for the full list, or press Enter to cancel.")
+            print()
+
+            while True:
+                key_input = input(f"  Button {choice} -> ").strip().lower()
+
+                if key_input == "k":
+                    print_key_categories()
+                    continue
+                if not key_input:
+                    print("  (cancelled)")
+                    break
+
+                new_code = resolve_key(key_input)
+                if new_code is None:
+                    print(f"  Unknown key: '{key_input}'. Type 'k' for the list.")
+                    continue
+
+                codes[btn_idx] = new_code
+                name = code_to_display(new_code)
+                if set_mappings(ser, codes):
+                    print(f"  Done! Button {choice} -> {name}")
+                else:
+                    print("  Error: could not save to device")
+                break
+        else:
+            print("  Type 1, 2, 3, k, or q.")
+
+
+def cmd_map(args):
+    """Remap button keys."""
+    if not ensure_pyserial():
+        return
+
+    # Non-interactive: --set
+    if args.keys:
+        if len(args.keys) != NUM_BUTTONS:
+            print(f"  Error: provide exactly {NUM_BUTTONS} key names.")
+            sys.exit(1)
+        codes = []
+        for k in args.keys:
+            code = resolve_key(k)
+            if code is None:
+                print(f"  Unknown key: '{k}'")
+                sys.exit(1)
+            codes.append(code)
+        ser, port = open_serial(args.port)
+        if set_mappings(ser, codes):
+            print("  Mappings saved:")
+            print_mappings(codes)
+        else:
+            print("  Error: could not save to device")
+        ser.close()
+        return
+
+    # Non-interactive: --get
+    if args.get:
+        ser, port = open_serial(args.port)
+        codes = get_mappings(ser)
+        if codes:
+            print_mappings(codes)
+        else:
+            print("  Error: could not read mappings")
+        ser.close()
+        return
+
+    # Interactive
+    print()
+    print("╔══════════════════════════════════╗")
+    print("║       VibeKey Key Mapper         ║")
+    print("╚══════════════════════════════════╝")
+
+    ser, port = open_serial(args.port)
+    if not is_vibekey(ser):
+        print("  Warning: device did not respond as VibeKey.\n")
+
+    try:
+        _interactive_map(ser)
+    except KeyboardInterrupt:
+        print("\n")
+    finally:
+        ser.close()
+
+
+def cmd_status(args):
+    """Show device info and current mappings."""
+    if not ensure_pyserial():
+        return
+
+    ser, port = open_serial(args.port)
+    ok = is_vibekey(ser)
+    codes = get_mappings(ser)
+    ser.close()
+
+    print()
+    print(f"  Port:       {port}")
+    print(f"  Device:     {'VibeKey (confirmed)' if ok else 'Unknown (no PONG response)'}")
+
+    if codes:
+        print(f"  Buttons:    {NUM_BUTTONS}")
+        print()
+        print("  Mappings:")
+        print_mappings(codes)
+    else:
+        print("  Mappings:   could not read")
+    print()
+
+
+def cmd_flash(args):
+    """Build and upload firmware."""
+    env = args.env or "esp32s3"
+    print()
+    print(f"  Flashing VibeKey firmware (env: {env})")
+    hr()
+    try:
+        do_flash(env=env, upload=not args.build_only, monitor=args.monitor)
+        if not args.build_only:
+            print()
+            print("  Flash complete. Run 'vibekey status' to verify.")
+    except subprocess.CalledProcessError:
+        print("\n  Build/upload failed.")
+        sys.exit(1)
+
+
+def cmd_monitor(args):
+    """Open serial monitor."""
+    if not check_platformio():
+        # Fallback: use pyserial
+        if not ensure_pyserial():
+            print("  Need PlatformIO or pyserial for serial monitor.")
+            return
+        ser, port = open_serial(args.port)
+        print(f"  Serial monitor on {port} (Ctrl+C to exit)")
+        hr()
+        try:
+            while True:
+                if ser.in_waiting:
+                    line = ser.readline().decode(errors="replace").rstrip()
+                    print(f"  {line}")
+                else:
+                    time.sleep(0.01)
+        except KeyboardInterrupt:
+            print("\n  Monitor closed.")
+        finally:
+            ser.close()
+    else:
+        env = args.env or "esp32s3"
+        subprocess.call(["pio", "device", "monitor", "-e", env], cwd=SCRIPT_DIR)
+
+
+def cmd_ports(args):
+    """List available serial ports."""
+    if not ensure_pyserial():
+        return
+    import serial.tools.list_ports
+    ports = serial.tools.list_ports.comports()
+    if not ports:
+        print("  No serial ports found.")
+        return
+    print()
+    print("  Available serial ports:")
+    hr()
+    for p in ports:
+        print(f"  {p.device:20s}  {p.description}")
+    print()
+
+
+def cmd_reset(args):
+    """Reset key mappings to defaults."""
+    if not ensure_pyserial():
+        return
+
+    defaults = [226, 234, 233]  # mute, volume_down, volume_up
+    ser, port = open_serial(args.port)
+
+    print()
+    print("  Resetting to default mappings:")
+    print_mappings(defaults)
+
+    if not args.yes:
+        if not ask_yn("\n  Confirm reset?"):
+            print("  Cancelled.")
+            ser.close()
+            return
+
+    if set_mappings(ser, defaults):
+        print("\n  Reset complete.")
+    else:
+        print("\n  Error: could not write to device.")
+    ser.close()
+
+
+def cmd_keys(args):
+    """Show all available key names."""
+    print()
+    print("  Available key names for mapping:")
+    print_key_categories()
+    print()
+
+
+def cmd_help(args=None):
+    """Show help."""
+    print("""
+  vibekey — CLI for your VibeKey 3-button BLE keyboard
+
+  COMMANDS
+  ────────────────────────────────────────────────────
+
+  vibekey setup                Guided first-time setup
+                               Installs tools, configures pins,
+                               flashes firmware, maps buttons.
+
+  vibekey flash                Build and upload firmware
+    --env esp32                  Use original ESP32 (default: esp32s3)
+    --build-only                 Build without uploading
+    --monitor                    Open serial monitor after upload
+
+  vibekey map                  Remap buttons (interactive)
+    vibekey map mute vol_down vol_up
+                                 Set all 3 buttons at once
+    --get                        Print current mappings
+
+  vibekey status               Show device info and mappings
+  vibekey monitor              Live serial output from device
+  vibekey ports                List available serial ports
+  vibekey reset                Reset mappings to defaults
+    -y                           Skip confirmation
+  vibekey keys                 Show all available key names
+
+  GLOBAL OPTIONS
+  ────────────────────────────────────────────────────
+  --port, -p PORT              Serial port (auto-detected if omitted)
+
+  EXAMPLES
+  ────────────────────────────────────────────────────
+  vibekey setup                # first-time guided setup
+  vibekey map                  # interactive remapping
+  vibekey map f13 mute space   # set buttons from command line
+  vibekey status               # check what's mapped
+  vibekey flash --monitor      # reflash and watch serial output
+""")
+
+
+# ─── Main ─────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="vibekey",
+        description="CLI for setting up and managing your VibeKey keyboard",
+        add_help=False,
+    )
+    parser.add_argument("--port", "-p", default=None, help="Serial port")
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    # setup
+    sub = subparsers.add_parser("setup", help="Guided first-time setup")
+
+    # flash
+    sub = subparsers.add_parser("flash", help="Build and upload firmware")
+    sub.add_argument("--env", default=None, help="PlatformIO environment")
+    sub.add_argument("--build-only", action="store_true", help="Build without uploading")
+    sub.add_argument("--monitor", action="store_true", help="Open serial monitor after")
+
+    # map
+    sub = subparsers.add_parser("map", help="Remap button keys")
+    sub.add_argument("keys", nargs="*", default=None, help="Key names (e.g. mute vol_down vol_up)")
+    sub.add_argument("--get", action="store_true", help="Print current mappings")
+
+    # status
+    subparsers.add_parser("status", help="Show device info and mappings")
+
+    # monitor
+    sub = subparsers.add_parser("monitor", help="Live serial output")
+    sub.add_argument("--env", default=None, help="PlatformIO environment")
+
+    # ports
+    subparsers.add_parser("ports", help="List serial ports")
+
+    # reset
+    sub = subparsers.add_parser("reset", help="Reset mappings to defaults")
+    sub.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+
+    # keys
+    subparsers.add_parser("keys", help="Show available key names")
+
+    # help
+    subparsers.add_parser("help", help="Show help")
+
+    args = parser.parse_args()
+
+    commands = {
+        "setup": cmd_setup,
+        "flash": cmd_flash,
+        "map": cmd_map,
+        "status": cmd_status,
+        "monitor": cmd_monitor,
+        "ports": cmd_ports,
+        "reset": cmd_reset,
+        "keys": cmd_keys,
+        "help": cmd_help,
+    }
+
+    if not args.command:
+        cmd_help()
+        return
+
+    commands[args.command](args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n")
+        sys.exit(0)

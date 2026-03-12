@@ -2,13 +2,16 @@
 """
 VibeKey Mapper — Configure your 3-button BLE keyboard
 ======================================================
-A simple interactive tool to assign key functions to each button.
-Communicates with the ESP32 over USB serial.
+NOTE: This module is kept for backwards compatibility.
+The recommended way to manage your VibeKey is the main CLI:
 
-Usage:
-    python3 mapper.py                   # auto-detect serial port
+    ./vibekey map           Interactive key mapping
+    ./vibekey setup         Guided first-time setup
+    ./vibekey help          All commands
+
+This standalone script still works:
+    python3 mapper.py                       # auto-detect serial port
     python3 mapper.py --port /dev/ttyUSB0   # specify port
-    python3 mapper.py --list-ports      # show available serial ports
 
 Requirements:
     pip install pyserial
