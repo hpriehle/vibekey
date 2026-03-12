@@ -9,14 +9,25 @@
  *   - Each switch wired between its GPIO pin and GND
  *   - (Optional) LED on LED_PIN for status feedback
  *
- * Key mappings are stored in ESP32 flash (Preferences/NVS) and can
- * be changed at runtime via serial commands — no reflashing needed.
- * Use the Python mapper tool: python3 mapper/mapper.py
+ * Features:
+ *   - 3 remappable buttons via serial (no reflash needed)
+ *   - Multiple profiles (switch with serial or button combo)
+ *   - Macros: one button can send a sequence of keys
+ *   - Persistent storage in ESP32 flash (NVS)
  *
  * Serial protocol (115200 baud):
- *   GET              — returns current mappings as "MAP:k1,k2,k3"
- *   SET k1,k2,k3     — sets key codes (decimal) and saves to flash
- *   KEYS             — lists all available key names and codes
+ *   PING                — returns "PONG:vibekey"
+ *   GET                 — returns current mappings as "MAP:k1,k2,k3"
+ *   SET k1,k2,k3        — sets key codes and saves to flash
+ *   KEYS                — lists all available key names and codes
+ *   PROFILE             — returns current profile number "PROFILE:n"
+ *   PROFILE n           — switch to profile n (0-based)
+ *   PROFILES            — returns number of profiles "PROFILES:n"
+ *   MACRO b steps       — set macro for button b: "MACRO 0 128+97,0,97"
+ *                         Each step is [modifier+]keycode. Steps separated by commas.
+ *                         Use 0 as a step to insert a pause.
+ *   GETMACRO b          — returns macro for button b
+ *   CLEARMACRO b        — clear macro for button b (reverts to single key)
  *
  * Library required:
  *   ESP32-BLE-Keyboard by T-vK
@@ -43,6 +54,16 @@ bool          lastReading[NUM_BUTTONS];
 bool          stableState[NUM_BUTTONS];
 unsigned long debounceStart[NUM_BUTTONS];
 
+// -- PROFILE STATE --------------------------------------------
+uint8_t currentProfile = 0;
+
+// -- MACRO STATE ----------------------------------------------
+// Each macro step: high byte = modifier, low byte = keycode
+// A step of 0 means "pause" (MACRO_STEP_DELAY_MS)
+// macroLen[i] == 0 means button i uses simple single-key mode
+uint16_t macroSteps[NUM_BUTTONS][MAX_MACRO_STEPS];
+uint8_t  macroLen[NUM_BUTTONS];
+
 // -- LED STATE ------------------------------------------------
 bool ledOn             = false;
 unsigned long ledOffTime   = 0;
@@ -68,8 +89,14 @@ void ledFlash() {
 #endif
 }
 
+// -- PROFILE PERSISTENCE -------------------------------------
+
+String profileNamespace() {
+  return "vk_p" + String(currentProfile);
+}
+
 void loadMappings() {
-  prefs.begin("vibekey", true);  // read-only
+  prefs.begin(profileNamespace().c_str(), true);  // read-only
   keyMappings[0] = prefs.getUChar("key0", DEFAULT_KEY_1);
   keyMappings[1] = prefs.getUChar("key1", DEFAULT_KEY_2);
   keyMappings[2] = prefs.getUChar("key2", DEFAULT_KEY_3);
@@ -77,12 +104,91 @@ void loadMappings() {
 }
 
 void saveMappings() {
-  prefs.begin("vibekey", false);  // read-write
+  prefs.begin(profileNamespace().c_str(), false);  // read-write
   prefs.putUChar("key0", keyMappings[0]);
   prefs.putUChar("key1", keyMappings[1]);
   prefs.putUChar("key2", keyMappings[2]);
   prefs.end();
 }
+
+void loadProfile(uint8_t p) {
+  currentProfile = p;
+
+  // Save active profile number
+  prefs.begin("vibekey", false);
+  prefs.putUChar("profile", currentProfile);
+  prefs.end();
+
+  loadMappings();
+  loadMacros();
+}
+
+void loadMacros() {
+  prefs.begin(profileNamespace().c_str(), true);
+  for (int i = 0; i < NUM_BUTTONS; i++) {
+    String lenKey = "ml" + String(i);
+    macroLen[i] = prefs.getUChar(lenKey.c_str(), 0);
+    if (macroLen[i] > MAX_MACRO_STEPS) macroLen[i] = 0;
+    for (int s = 0; s < macroLen[i]; s++) {
+      String stepKey = "ms" + String(i) + "_" + String(s);
+      macroSteps[i][s] = prefs.getUShort(stepKey.c_str(), 0);
+    }
+  }
+  prefs.end();
+}
+
+void saveMacro(int btn) {
+  prefs.begin(profileNamespace().c_str(), false);
+  String lenKey = "ml" + String(btn);
+  prefs.putUChar(lenKey.c_str(), macroLen[btn]);
+  for (int s = 0; s < macroLen[btn]; s++) {
+    String stepKey = "ms" + String(btn) + "_" + String(s);
+    prefs.putUShort(stepKey.c_str(), macroSteps[btn][s]);
+  }
+  prefs.end();
+}
+
+void clearMacro(int btn) {
+  macroLen[btn] = 0;
+  prefs.begin(profileNamespace().c_str(), false);
+  String lenKey = "ml" + String(btn);
+  prefs.putUChar(lenKey.c_str(), 0);
+  prefs.end();
+}
+
+// -- KEY EXECUTION -------------------------------------------
+
+void executeButton(int btn) {
+  if (macroLen[btn] > 0) {
+    // Execute macro sequence
+    Serial.print("  -> macro (");
+    Serial.print(macroLen[btn]);
+    Serial.println(" steps)");
+    for (int s = 0; s < macroLen[btn]; s++) {
+      uint16_t step = macroSteps[btn][s];
+      if (step == 0) {
+        delay(MACRO_STEP_DELAY_MS);
+        continue;
+      }
+      uint8_t modifier = (step >> 8) & 0xFF;
+      uint8_t keycode = step & 0xFF;
+      if (modifier) {
+        bleKeyboard.press(modifier);
+      }
+      bleKeyboard.press(keycode);
+      delay(MACRO_STEP_DELAY_MS);
+      bleKeyboard.releaseAll();
+    }
+  } else {
+    // Single key
+    Serial.print("  -> sending key code ");
+    Serial.println(keyMappings[btn]);
+    bleKeyboard.write(keyMappings[btn]);
+  }
+  ledFlash();
+}
+
+// -- SERIAL PROTOCOL ------------------------------------------
 
 void printMappings() {
   Serial.print("MAP:");
@@ -99,6 +205,10 @@ void printKeyList() {
   Serial.println("129,KEY_LEFT_SHIFT");
   Serial.println("130,KEY_LEFT_ALT");
   Serial.println("131,KEY_LEFT_GUI");
+  Serial.println("132,KEY_RIGHT_CTRL");
+  Serial.println("133,KEY_RIGHT_SHIFT");
+  Serial.println("134,KEY_RIGHT_ALT");
+  Serial.println("135,KEY_RIGHT_GUI");
   Serial.println("176,KEY_RETURN");
   Serial.println("177,KEY_ESC");
   Serial.println("178,KEY_BACKSPACE");
@@ -123,13 +233,6 @@ void printKeyList() {
   Serial.println("209,KEY_F16");
   Serial.println("210,KEY_F17");
   Serial.println("211,KEY_F18");
-  Serial.println("212,KEY_F19");
-  Serial.println("213,KEY_F20");
-  Serial.println("214,KEY_F21");
-  Serial.println("215,KEY_F22");
-  Serial.println("216,KEY_F23");
-  Serial.println("217,KEY_F24");
-  Serial.println("218,KEY_INSERT");
   Serial.println("212,KEY_HOME");
   Serial.println("213,KEY_PAGE_UP");
   Serial.println("214,KEY_DELETE");
@@ -139,14 +242,34 @@ void printKeyList() {
   Serial.println("218,KEY_LEFT_ARROW");
   Serial.println("219,KEY_DOWN_ARROW");
   Serial.println("220,KEY_UP_ARROW");
-  Serial.println("205,KEY_MEDIA_PLAY_PAUSE");
   Serial.println("226,KEY_MEDIA_MUTE");
   Serial.println("233,KEY_MEDIA_VOLUME_UP");
   Serial.println("234,KEY_MEDIA_VOLUME_DOWN");
+  Serial.println("205,KEY_MEDIA_PLAY_PAUSE");
   Serial.println("181,KEY_MEDIA_NEXT_TRACK");
   Serial.println("182,KEY_MEDIA_PREVIOUS_TRACK");
   Serial.println("183,KEY_MEDIA_STOP");
   Serial.println("KEYS_END");
+}
+
+void printMacro(int btn) {
+  Serial.print("MACRO:");
+  Serial.print(btn);
+  Serial.print(":");
+  Serial.print(macroLen[btn]);
+  Serial.print(":");
+  for (int s = 0; s < macroLen[btn]; s++) {
+    if (s > 0) Serial.print(",");
+    uint16_t step = macroSteps[btn][s];
+    uint8_t modifier = (step >> 8) & 0xFF;
+    uint8_t keycode = step & 0xFF;
+    if (modifier) {
+      Serial.print(modifier);
+      Serial.print("+");
+    }
+    Serial.print(keycode);
+  }
+  Serial.println();
 }
 
 void handleSerialCommand(String cmd) {
@@ -191,6 +314,83 @@ void handleSerialCommand(String cmd) {
   } else if (cmd == "PING") {
     Serial.println("PONG:vibekey");
 
+  } else if (cmd == "PROFILE") {
+    Serial.print("PROFILE:");
+    Serial.println(currentProfile);
+
+  } else if (cmd.startsWith("PROFILE ")) {
+    int p = cmd.substring(8).toInt();
+    if (p >= 0 && p < NUM_PROFILES) {
+      loadProfile((uint8_t)p);
+      Serial.print("OK:PROFILE:");
+      Serial.println(currentProfile);
+      printMappings();
+    } else {
+      Serial.print("ERR:profile must be 0-");
+      Serial.println(NUM_PROFILES - 1);
+    }
+
+  } else if (cmd == "PROFILES") {
+    Serial.print("PROFILES:");
+    Serial.println(NUM_PROFILES);
+
+  } else if (cmd.startsWith("MACRO ")) {
+    // Format: MACRO <btn> <mod+key,mod+key,...>
+    String args = cmd.substring(6);
+    int space = args.indexOf(' ');
+    if (space == -1) {
+      Serial.println("ERR:usage MACRO <btn> <steps>");
+      return;
+    }
+    int btn = args.substring(0, space).toInt();
+    if (btn < 0 || btn >= NUM_BUTTONS) {
+      Serial.println("ERR:invalid button");
+      return;
+    }
+    String stepsStr = args.substring(space + 1);
+    int stepIdx = 0;
+    while (stepsStr.length() > 0 && stepIdx < MAX_MACRO_STEPS) {
+      int comma = stepsStr.indexOf(',');
+      String token;
+      if (comma == -1) {
+        token = stepsStr;
+        stepsStr = "";
+      } else {
+        token = stepsStr.substring(0, comma);
+        stepsStr = stepsStr.substring(comma + 1);
+      }
+      int plus = token.indexOf('+');
+      if (plus != -1) {
+        uint8_t mod = (uint8_t)token.substring(0, plus).toInt();
+        uint8_t key = (uint8_t)token.substring(plus + 1).toInt();
+        macroSteps[btn][stepIdx] = ((uint16_t)mod << 8) | key;
+      } else {
+        macroSteps[btn][stepIdx] = (uint16_t)token.toInt();
+      }
+      stepIdx++;
+    }
+    macroLen[btn] = stepIdx;
+    saveMacro(btn);
+    Serial.println("OK");
+    printMacro(btn);
+
+  } else if (cmd.startsWith("GETMACRO ")) {
+    int btn = cmd.substring(9).toInt();
+    if (btn >= 0 && btn < NUM_BUTTONS) {
+      printMacro(btn);
+    } else {
+      Serial.println("ERR:invalid button");
+    }
+
+  } else if (cmd.startsWith("CLEARMACRO ")) {
+    int btn = cmd.substring(11).toInt();
+    if (btn >= 0 && btn < NUM_BUTTONS) {
+      clearMacro(btn);
+      Serial.println("OK");
+    } else {
+      Serial.println("ERR:invalid button");
+    }
+
   } else if (cmd.length() > 0) {
     Serial.println("ERR:unknown command");
   }
@@ -200,11 +400,22 @@ void handleSerialCommand(String cmd) {
 void setup() {
   Serial.begin(115200);
   Serial.println("=============================");
-  Serial.println("  VibeKey BLE Keyboard v3.0");
+  Serial.println("  VibeKey BLE Keyboard v4.0");
   Serial.println("=============================");
 
-  // Load key mappings from flash
+  // Load active profile number
+  prefs.begin("vibekey", true);
+  currentProfile = prefs.getUChar("profile", 0);
+  if (currentProfile >= NUM_PROFILES) currentProfile = 0;
+  prefs.end();
+
+  // Load key mappings and macros for active profile
   loadMappings();
+  loadMacros();
+  Serial.print("Profile: ");
+  Serial.print(currentProfile);
+  Serial.print("/");
+  Serial.println(NUM_PROFILES - 1);
   Serial.print("Loaded mappings: ");
   printMappings();
 
@@ -219,7 +430,13 @@ void setup() {
     Serial.print(" on GPIO ");
     Serial.print(buttonPins[i]);
     Serial.print(" -> key code ");
-    Serial.println(keyMappings[i]);
+    Serial.print(keyMappings[i]);
+    if (macroLen[i] > 0) {
+      Serial.print(" (macro: ");
+      Serial.print(macroLen[i]);
+      Serial.print(" steps)");
+    }
+    Serial.println();
   }
 
 #if LED_PIN >= 0
@@ -233,6 +450,25 @@ void setup() {
   bleKeyboard.begin();
   Serial.println("BLE advertising started.");
   Serial.println("Waiting for connection...");
+
+  // Check for profile-cycle combo: hold Button 1 + Button 3 during boot
+  delay(200);
+  if (digitalRead(buttonPins[0]) == LOW && digitalRead(buttonPins[NUM_BUTTONS - 1]) == LOW) {
+    uint8_t nextProfile = (currentProfile + 1) % NUM_PROFILES;
+    Serial.print("Profile combo detected! Switching to profile ");
+    Serial.println(nextProfile);
+    loadProfile(nextProfile);
+
+    // Flash LED to indicate profile number (nextProfile + 1 blinks)
+#if LED_PIN >= 0
+    for (int i = 0; i <= (int)nextProfile; i++) {
+      ledSet(true);
+      delay(200);
+      ledSet(false);
+      delay(200);
+    }
+#endif
+  }
 }
 
 // -- MAIN LOOP ------------------------------------------------
@@ -272,10 +508,7 @@ void loop() {
         Serial.println(" DOWN");
 
         if (connected) {
-          Serial.print("  -> sending key code ");
-          Serial.println(keyMappings[i]);
-          bleKeyboard.write(keyMappings[i]);
-          ledFlash();
+          executeButton(i);
         } else {
           Serial.println("  -> BLE not connected");
         }

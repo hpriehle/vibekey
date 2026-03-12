@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 420" font-family="monospace" font-size="12">
+<style>
+  .wire-signal { stroke: #2563eb; stroke-width: 2; fill: none; }
+  .wire-gnd { stroke: #333; stroke-width: 2; fill: none; stroke-dasharray: 6,3; }
+  .switch { fill: #f8fafc; stroke: #334155; stroke-width: 2; rx: 4; }
+  .esp { fill: #ecfdf5; stroke: #059669; stroke-width: 2; rx: 6; }
+  .label { font-size: 11px; fill: #1e293b; text-anchor: middle; }
+  .pin-label { font-size: 10px; fill: #2563eb; text-anchor: middle; }
+  .gnd-label { font-size: 10px; fill: #666; text-anchor: middle; }
+  .title { font-size: 16px; font-weight: bold; fill: #0f172a; text-anchor: middle; }
+  .subtitle { font-size: 11px; fill: #64748b; text-anchor: middle; }
+</style>
+<text x="300" y="25" class="title">VibeKey Wiring Diagram</text>
+<text x="300" y="42" class="subtitle">3 MX switches + ESP32-S3</text>
+<rect x="220" y="280" width="160" height="100" class="esp"/>
+<text x="300" y="305" class="label" font-weight="bold" font-size="13">ESP32-S3</text>
+<text x="300" y="322" class="label" font-size="10">DevKitC-1</text>
+<rect x="280" y="378" width="40" height="14" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1.5" rx="3"/>
+<text x="300" y="389" font-size="8" text-anchor="middle" fill="#475569">USB-C</text>
+<rect x="80" y="60" width="70" height="50" class="switch"/>
+<text x="115" y="80" class="label" font-weight="bold">BTN 1</text>
+<text x="115" y="95" class="label" font-size="9">MX Switch</text>
+<circle cx="98" cy="110" r="3" fill="#2563eb"/>
+<circle cx="132" cy="110" r="3" fill="#333"/>
+<path d="M98,110 L98,140 L250,140 L250,280" class="wire-signal"/>
+<text x="250" y="275" class="pin-label">GPIO 4</text>
+<rect x="250" y="60" width="70" height="50" class="switch"/>
+<text x="285" y="80" class="label" font-weight="bold">BTN 2</text>
+<text x="285" y="95" class="label" font-size="9">MX Switch</text>
+<circle cx="268" cy="110" r="3" fill="#2563eb"/>
+<circle cx="302" cy="110" r="3" fill="#333"/>
+<path d="M268,110 L268,160 L295,160 L295,280" class="wire-signal"/>
+<text x="295" y="275" class="pin-label">GPIO 5</text>
+<rect x="420" y="60" width="70" height="50" class="switch"/>
+<text x="455" y="80" class="label" font-weight="bold">BTN 3</text>
+<text x="455" y="95" class="label" font-size="9">MX Switch</text>
+<circle cx="438" cy="110" r="3" fill="#2563eb"/>
+<circle cx="472" cy="110" r="3" fill="#333"/>
+<path d="M438,110 L438,180 L340,180 L340,280" class="wire-signal"/>
+<text x="340" y="275" class="pin-label">GPIO 6</text>
+<path d="M132,110 L132,125" class="wire-gnd"/>
+<path d="M302,110 L302,125" class="wire-gnd"/>
+<path d="M472,110 L472,125" class="wire-gnd"/>
+<path d="M132,125 L472,125" class="wire-gnd"/>
+<path d="M472,125 L360,125 L360,280" class="wire-gnd"/>
+<text x="360" y="275" class="gnd-label">GND</text>
+<line x1="10" y1="375" x2="40" y2="375" class="wire-signal"/>
+<text x="45" y="379" font-size="10" fill="#1e293b">Signal (GPIO)</text>
+<line x1="10" y1="393" x2="40" y2="393" class="wire-gnd"/>
+<text x="45" y="397" font-size="10" fill="#1e293b">Ground (GND)</text>
+</svg>

@@ -1,6 +1,10 @@
 # PlatformIO build artifacts
 .pio/
 src/
+build/
+
+# STL output (generated from OpenSCAD)
+case/stl/
 
 # IDE settings
 .vscode/

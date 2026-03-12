@@ -3,7 +3,7 @@
  * ==========================================
  * Edit this file to customize pins, Bluetooth name, and behavior.
  * Key mappings are stored on the ESP32 and configured via the
- * Python mapper tool — no need to reflash to change keys.
+ * CLI tool (vibekey map) — no need to reflash to change keys.
  */
 
 #ifndef CONFIG_H
@@ -47,7 +47,7 @@
 // DEFAULT KEY MAPPINGS
 // -----------------------------------------------------------------
 // These are used on first boot only. After that, mappings are stored
-// in flash and configured via the Python mapper tool or serial commands.
+// in flash and configured via the CLI tool or serial commands.
 //
 // Key code reference:
 //   0xB0  KEY_RETURN            Enter
@@ -63,6 +63,26 @@
 #define DEFAULT_KEY_1   KEY_MEDIA_MUTE
 #define DEFAULT_KEY_2   KEY_MEDIA_VOLUME_DOWN
 #define DEFAULT_KEY_3   KEY_MEDIA_VOLUME_UP
+
+// -----------------------------------------------------------------
+// PROFILES
+// -----------------------------------------------------------------
+// Number of mapping profiles. Each profile stores a separate set of
+// key mappings. Switch profiles via serial or button combo on boot.
+// Hold Button 1 + Button 3 during the first second of boot to cycle.
+
+#define NUM_PROFILES    3
+
+// -----------------------------------------------------------------
+// MACROS
+// -----------------------------------------------------------------
+// Maximum number of key steps in a macro sequence.
+// A macro sends multiple keys in order with configurable delays.
+
+#define MAX_MACRO_STEPS 8
+
+// Delay between macro key presses (ms)
+#define MACRO_STEP_DELAY_MS 50
 
 // -----------------------------------------------------------------
 // DEBOUNCE

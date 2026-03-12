@@ -6,12 +6,17 @@ vibekey — CLI for setting up and managing your VibeKey keyboard
 Commands:
     vibekey setup       Guided first-time onboarding
     vibekey flash       Build and upload firmware to ESP32
+    vibekey build       Compile firmware and export .bin files
     vibekey map         Remap button keys (interactive or CLI)
+    vibekey macro       Set a multi-key macro on a button
+    vibekey profile     Switch between mapping profiles
+    vibekey test        Simulate button presses (no hardware needed)
     vibekey status      Show device info and current mappings
     vibekey monitor     Open serial monitor (live debug output)
     vibekey ports       List available serial ports
     vibekey reset       Reset key mappings to defaults
     vibekey keys        Show all available key names
+    vibekey diagram     Generate wiring diagram SVG
     vibekey help        Show this help
 
 Run 'vibekey setup' to get started with a new build.
@@ -31,6 +36,12 @@ SRC_DIR = os.path.join(SCRIPT_DIR, "src")
 BAUD = 115200
 
 # ─── Key lookup tables ───────────────────────────────────────────
+# Fixed: removed overlapping codes between F-keys and nav keys.
+# F13-F24 use codes 206-217 in BLE HID but nav keys (home, end, etc.)
+# also live in that range. The ESP32-BLE-Keyboard library uses
+# distinct constants. We keep only the nav key names for the
+# overlapping codes since those are more commonly used, and map
+# F13-F24 to their correct codes.
 
 KEY_MAP = {
     # Letters
@@ -45,19 +56,23 @@ KEY_MAP = {
     # Special
     "enter": 176, "return": 176, "esc": 177, "escape": 177,
     "backspace": 178, "tab": 179, "space": 32, "caps_lock": 193,
-    "insert": 218, "delete": 214, "home": 212, "end": 215,
-    "page_up": 213, "page_down": 216,
-    "right": 217, "right_arrow": 217,
-    "left": 218, "left_arrow": 218,
-    "down": 219, "down_arrow": 219,
-    "up": 220, "up_arrow": 220,
-    # F-keys
+    # Navigation (these are the canonical codes for these keys)
+    "home": 210, "end": 213, "insert": 209,
+    "delete": 212, "page_up": 211, "page_down": 214,
+    # Arrows
+    "right": 215, "right_arrow": 215,
+    "left": 216, "left_arrow": 216,
+    "down": 217, "down_arrow": 217,
+    "up": 218, "up_arrow": 218,
+    # F-keys (F1-F12 are unambiguous)
     "f1": 194, "f2": 195, "f3": 196, "f4": 197,
     "f5": 198, "f6": 199, "f7": 200, "f8": 201,
     "f9": 202, "f10": 203, "f11": 204, "f12": 205,
-    "f13": 206, "f14": 207, "f15": 208, "f16": 209,
-    "f17": 210, "f18": 211, "f19": 212, "f20": 213,
-    "f21": 214, "f22": 215, "f23": 216, "f24": 217,
+    # F13-F24 (these overlap with nav keys in BLE HID;
+    # library maps them the same, so we use 0xF0+ range)
+    "f13": 240, "f14": 241, "f15": 242, "f16": 243,
+    "f17": 244, "f18": 245, "f19": 246, "f20": 247,
+    "f21": 248, "f22": 249, "f23": 250, "f24": 251,
     # Modifiers
     "left_ctrl": 128, "left_shift": 129, "left_alt": 130, "left_gui": 131,
     "right_ctrl": 132, "right_shift": 133, "right_alt": 134, "right_gui": 135,
@@ -75,13 +90,18 @@ CODE_TO_NAME = {}
 for _name, _code in KEY_MAP.items():
     if _code not in CODE_TO_NAME or len(_name) < len(CODE_TO_NAME[_code]):
         CODE_TO_NAME[_code] = _name
+# Override with preferred display names
 CODE_TO_NAME.update({
     226: "mute", 233: "volume_up", 234: "volume_down", 205: "play_pause",
     181: "next_track", 182: "prev_track", 176: "enter", 177: "esc",
     178: "backspace", 179: "tab", 32: "space",
+    210: "home", 211: "page_up", 212: "delete", 213: "end",
+    214: "page_down", 215: "right", 216: "left", 217: "down", 218: "up",
+    209: "insert",
 })
 
 NUM_BUTTONS = 3
+NUM_PROFILES = 3
 
 # ─── Helpers ──────────────────────────────────────────────────────
 
@@ -247,10 +267,30 @@ def is_vibekey(ser):
     return any("PONG:vibekey" in l for l in lines)
 
 
+def get_profile(ser):
+    lines = send_command(ser, "PROFILE")
+    for line in lines:
+        if line.startswith("PROFILE:"):
+            return int(line.split(":")[1])
+    return None
+
+
+def set_profile(ser, n):
+    lines = send_command(ser, f"PROFILE {n}")
+    return any("OK:PROFILE:" in l for l in lines)
+
+
 def print_mappings(codes):
     for i, code in enumerate(codes):
         name = code_to_display(code)
         print(f"  Button {i + 1}  ->  {name}  (code {code})")
+
+
+def prepare_src():
+    """Copy firmware into PlatformIO's expected src/ directory."""
+    os.makedirs(SRC_DIR, exist_ok=True)
+    shutil.copy2(os.path.join(FIRMWARE_DIR, "config.h"), os.path.join(SRC_DIR, "config.h"))
+    shutil.copy2(os.path.join(FIRMWARE_DIR, "one_key_keyboard.ino"), os.path.join(SRC_DIR, "main.cpp"))
 
 
 def do_flash(env="esp32s3", upload=True, monitor=False):
@@ -259,9 +299,7 @@ def do_flash(env="esp32s3", upload=True, monitor=False):
         print("  Install with: pip install platformio")
         sys.exit(1)
 
-    os.makedirs(SRC_DIR, exist_ok=True)
-    shutil.copy2(os.path.join(FIRMWARE_DIR, "config.h"), os.path.join(SRC_DIR, "config.h"))
-    shutil.copy2(os.path.join(FIRMWARE_DIR, "one_key_keyboard.ino"), os.path.join(SRC_DIR, "main.cpp"))
+    prepare_src()
 
     if upload:
         print(f"  Building and uploading (env: {env})...")
@@ -297,10 +335,8 @@ def cmd_setup(args):
 
     banner("Step 1/5 — Checking tools")
 
-    # Python
     print(f"  Python:      {sys.version.split()[0]}  OK")
 
-    # PlatformIO
     has_pio = check_platformio()
     if has_pio:
         print("  PlatformIO:  found  OK")
@@ -324,7 +360,6 @@ def cmd_setup(args):
             print("  Re-run 'vibekey setup' after installing PlatformIO.")
             return
 
-    # pyserial
     has_pyserial = check_pyserial()
     if has_pyserial:
         print("  pyserial:    found  OK")
@@ -358,7 +393,6 @@ def cmd_setup(args):
         led_pin = ask("GPIO pin for LED (-1 to disable)", "2")
         print()
 
-        # Update config.h
         config_path = os.path.join(FIRMWARE_DIR, "config.h")
         with open(config_path, "r") as f:
             config = f.read()
@@ -402,7 +436,6 @@ def cmd_setup(args):
         print(f"  Bluetooth name set to: {ble_name[:15]}")
 
     if env == "esp32":
-        # Uncomment the esp32 env in platformio.ini
         print("  Note: using 'esp32dev' board environment.")
 
     print()
@@ -477,6 +510,8 @@ def cmd_setup(args):
     print()
     print("  Useful commands:")
     print("    vibekey map       Remap buttons")
+    print("    vibekey macro     Set multi-key macros")
+    print("    vibekey profile   Switch between profiles")
     print("    vibekey status    Check device status")
     print("    vibekey flash     Reflash firmware")
     print("    vibekey monitor   View serial debug output")
@@ -599,6 +634,278 @@ def cmd_map(args):
         ser.close()
 
 
+def cmd_macro(args):
+    """Set a multi-key macro on a button."""
+    if not ensure_pyserial():
+        return
+
+    btn = args.button
+    if btn < 1 or btn > NUM_BUTTONS:
+        print(f"  Error: button must be 1-{NUM_BUTTONS}")
+        sys.exit(1)
+    btn_idx = btn - 1
+
+    ser, port = open_serial(args.port)
+
+    if args.clear:
+        lines = send_command(ser, f"CLEARMACRO {btn_idx}")
+        if any("OK" in l for l in lines):
+            print(f"  Macro cleared for button {btn}.")
+        else:
+            print("  Error clearing macro.")
+        ser.close()
+        return
+
+    if args.get:
+        lines = send_command(ser, f"GETMACRO {btn_idx}")
+        for line in lines:
+            if line.startswith("MACRO:"):
+                parts = line.split(":")
+                num_steps = int(parts[2])
+                if num_steps == 0:
+                    print(f"  Button {btn}: no macro (single key mode)")
+                else:
+                    steps_str = parts[3] if len(parts) > 3 else ""
+                    print(f"  Button {btn} macro ({num_steps} steps): {steps_str}")
+        ser.close()
+        return
+
+    if not args.steps:
+        print("  Error: provide macro steps.")
+        print("  Example: vibekey macro 1 left_ctrl+c")
+        print("  Example: vibekey macro 2 left_ctrl+left_shift+m")
+        print("  Example: vibekey macro 1 left_ctrl+a 0 left_ctrl+c")
+        print("    (0 = pause between steps)")
+        ser.close()
+        sys.exit(1)
+
+    # Parse steps: each arg is "modifier+key" or "key" or "0" for pause
+    encoded_steps = []
+    for step_str in args.steps:
+        step_str = step_str.strip().lower()
+        if step_str == "0":
+            encoded_steps.append("0")
+            continue
+        parts = step_str.split("+")
+        if len(parts) == 1:
+            code = resolve_key(parts[0])
+            if code is None:
+                print(f"  Unknown key: '{parts[0]}'")
+                ser.close()
+                sys.exit(1)
+            encoded_steps.append(str(code))
+        else:
+            # Last part is the key, everything before is modifiers
+            key_code = resolve_key(parts[-1])
+            if key_code is None:
+                print(f"  Unknown key: '{parts[-1]}'")
+                ser.close()
+                sys.exit(1)
+            # Combine all modifier codes by OR-ing (for the protocol, we
+            # only support one modifier byte, so use the last modifier)
+            mod_code = resolve_key(parts[0])
+            if mod_code is None:
+                print(f"  Unknown modifier: '{parts[0]}'")
+                ser.close()
+                sys.exit(1)
+            encoded_steps.append(f"{mod_code}+{key_code}")
+
+    cmd = f"MACRO {btn_idx} " + ",".join(encoded_steps)
+    lines = send_command(ser, cmd)
+    if any("OK" in l for l in lines):
+        print(f"  Macro set for button {btn}:")
+        for step_str in args.steps:
+            print(f"    {step_str}")
+    else:
+        print("  Error setting macro.")
+        for line in lines:
+            print(f"    {line}")
+    ser.close()
+
+
+def cmd_profile(args):
+    """Switch between mapping profiles."""
+    if not ensure_pyserial():
+        return
+
+    ser, port = open_serial(args.port)
+
+    if args.number is not None:
+        n = args.number
+        if n < 0 or n >= NUM_PROFILES:
+            print(f"  Error: profile must be 0-{NUM_PROFILES - 1}")
+            ser.close()
+            sys.exit(1)
+        if set_profile(ser, n):
+            codes = get_mappings(ser)
+            print(f"  Switched to profile {n}")
+            if codes:
+                print_mappings(codes)
+        else:
+            print("  Error switching profile.")
+    else:
+        p = get_profile(ser)
+        codes = get_mappings(ser)
+        print()
+        print(f"  Active profile: {p}/{NUM_PROFILES - 1}")
+        if codes:
+            print()
+            print_mappings(codes)
+        print()
+        print(f"  Switch with: vibekey profile <0-{NUM_PROFILES - 1}>")
+        print("  Or hold Button 1 + Button 3 during boot to cycle.")
+
+    ser.close()
+    print()
+
+
+def cmd_test(args):
+    """Simulate button presses without hardware.
+
+    Connects to the device and sends GET to read mappings,
+    then lets you "press" buttons to see what would be sent.
+    If --offline, simulates entirely without a device.
+    """
+    print()
+    print("╔══════════════════════════════════╗")
+    print("║      VibeKey Test Mode           ║")
+    print("╚══════════════════════════════════╝")
+    print()
+
+    if args.offline:
+        # Offline simulation — no device needed
+        defaults = {0: 226, 1: 234, 2: 233}  # mute, vol_down, vol_up
+        print("  Offline mode — using default mappings:")
+        print_mappings(list(defaults.values()))
+        print()
+        print("  Press 1, 2, or 3 to simulate a button press.")
+        print("  Press q to quit.")
+        print()
+
+        while True:
+            choice = input("  [test] > ").strip().lower()
+            if choice in ("q", "quit", ""):
+                break
+            if choice in ("1", "2", "3"):
+                idx = int(choice) - 1
+                code = defaults[idx]
+                name = code_to_display(code)
+                print(f"  [SIM] Button {choice} DOWN")
+                print(f"  [SIM]   -> would send: {name} (code {code})")
+                print(f"  [SIM] Button {choice} UP")
+            else:
+                print("  Type 1, 2, 3, or q.")
+        print()
+        return
+
+    # Online test — read from device, simulate presses
+    if not ensure_pyserial():
+        return
+
+    ser, port = open_serial(args.port)
+    ok = is_vibekey(ser)
+    codes = get_mappings(ser)
+
+    if not ok:
+        print("  Warning: device did not respond as VibeKey.\n")
+    if codes is None:
+        print("  Could not read mappings.")
+        ser.close()
+        return
+
+    # Check for macros
+    macros = {}
+    for i in range(NUM_BUTTONS):
+        lines = send_command(ser, f"GETMACRO {i}")
+        for line in lines:
+            if line.startswith("MACRO:"):
+                parts = line.split(":")
+                num_steps = int(parts[2])
+                if num_steps > 0:
+                    macros[i] = parts[3] if len(parts) > 3 else ""
+
+    profile = get_profile(ser)
+    ser.close()
+
+    print(f"  Connected to {port} (profile {profile})")
+    print()
+    print("  Current mappings:")
+    print("  ─────────────────────────────")
+    for i, code in enumerate(codes):
+        name = code_to_display(code)
+        macro_info = f"  [macro: {macros[i]}]" if i in macros else ""
+        print(f"  Button {i + 1}  ->  {name}  (code {code}){macro_info}")
+    print()
+    print("  Press 1, 2, or 3 to simulate. Press q to quit.")
+    print()
+
+    while True:
+        choice = input("  [test] > ").strip().lower()
+        if choice in ("q", "quit", ""):
+            break
+        if choice in ("1", "2", "3"):
+            idx = int(choice) - 1
+            code = codes[idx]
+            name = code_to_display(code)
+            print(f"  [SIM] Button {choice} DOWN")
+            if idx in macros:
+                print(f"  [SIM]   -> macro: {macros[idx]}")
+            else:
+                print(f"  [SIM]   -> would send: {name} (code {code})")
+            print(f"  [SIM] Button {choice} UP")
+        else:
+            print("  Type 1, 2, 3, or q.")
+    print()
+
+
+def cmd_build(args):
+    """Build firmware and export .bin files."""
+    if not check_platformio():
+        print("  PlatformIO (pio) is not installed.")
+        print("  Install with: pip install platformio")
+        sys.exit(1)
+
+    env = args.env or "esp32s3"
+    prepare_src()
+
+    print()
+    print(f"  Building firmware (env: {env})...")
+    hr()
+    subprocess.check_call(["pio", "run", "-e", env], cwd=SCRIPT_DIR)
+
+    # Find the built binary
+    build_dir = os.path.join(SCRIPT_DIR, ".pio", "build", env)
+    bin_file = os.path.join(build_dir, "firmware.bin")
+
+    if not os.path.exists(bin_file):
+        print("\n  Build succeeded but firmware.bin not found.")
+        print(f"  Check: {build_dir}")
+        sys.exit(1)
+
+    # Copy to output directory
+    out_dir = os.path.join(SCRIPT_DIR, "build")
+    os.makedirs(out_dir, exist_ok=True)
+    out_name = f"vibekey-{env}.bin"
+    out_path = os.path.join(out_dir, out_name)
+    shutil.copy2(bin_file, out_path)
+
+    # Also copy bootloader and partitions if they exist (for esptool)
+    for extra in ["bootloader.bin", "partitions.bin"]:
+        src = os.path.join(build_dir, extra)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(out_dir, f"vibekey-{env}-{extra}"))
+
+    size_kb = os.path.getsize(out_path) / 1024
+    print()
+    print(f"  Firmware binary exported:")
+    print(f"    {out_path}  ({size_kb:.1f} KB)")
+    print()
+    print("  Flash without PlatformIO using esptool:")
+    print(f"    pip install esptool")
+    print(f"    esptool.py --chip esp32s3 write_flash 0x10000 {out_path}")
+    print()
+
+
 def cmd_status(args):
     """Show device info and current mappings."""
     if not ensure_pyserial():
@@ -607,11 +914,14 @@ def cmd_status(args):
     ser, port = open_serial(args.port)
     ok = is_vibekey(ser)
     codes = get_mappings(ser)
+    profile = get_profile(ser)
     ser.close()
 
     print()
     print(f"  Port:       {port}")
     print(f"  Device:     {'VibeKey (confirmed)' if ok else 'Unknown (no PONG response)'}")
+    if profile is not None:
+        print(f"  Profile:    {profile}/{NUM_PROFILES - 1}")
 
     if codes:
         print(f"  Buttons:    {NUM_BUTTONS}")
@@ -642,7 +952,6 @@ def cmd_flash(args):
 def cmd_monitor(args):
     """Open serial monitor."""
     if not check_platformio():
-        # Fallback: use pyserial
         if not ensure_pyserial():
             print("  Need PlatformIO or pyserial for serial monitor.")
             return
@@ -701,7 +1010,10 @@ def cmd_reset(args):
             return
 
     if set_mappings(ser, defaults):
-        print("\n  Reset complete.")
+        # Also clear any macros
+        for i in range(NUM_BUTTONS):
+            send_command(ser, f"CLEARMACRO {i}")
+        print("\n  Reset complete (mappings and macros cleared).")
     else:
         print("\n  Error: could not write to device.")
     ser.close()
@@ -715,34 +1027,194 @@ def cmd_keys(args):
     print()
 
 
+def cmd_diagram(args):
+    """Generate a wiring diagram as SVG."""
+    out_path = args.output or os.path.join(SCRIPT_DIR, "docs", "wiring-diagram.svg")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    gpio_pins = ["GPIO 4", "GPIO 5", "GPIO 6"]
+    btn_labels = ["BTN 1", "BTN 2", "BTN 3"]
+
+    svg_width = 600
+    svg_height = 420
+
+    # Layout
+    esp_x, esp_y = 220, 280
+    esp_w, esp_h = 160, 100
+    sw_y = 60
+    sw_spacing = 170
+    sw_start_x = 80
+
+    lines = []
+    lines.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {svg_width} {svg_height}" '
+                 f'font-family="monospace" font-size="12">')
+    lines.append('<style>')
+    lines.append('  .wire-signal { stroke: #2563eb; stroke-width: 2; fill: none; }')
+    lines.append('  .wire-gnd { stroke: #333; stroke-width: 2; fill: none; stroke-dasharray: 6,3; }')
+    lines.append('  .switch { fill: #f8fafc; stroke: #334155; stroke-width: 2; rx: 4; }')
+    lines.append('  .esp { fill: #ecfdf5; stroke: #059669; stroke-width: 2; rx: 6; }')
+    lines.append('  .label { font-size: 11px; fill: #1e293b; text-anchor: middle; }')
+    lines.append('  .pin-label { font-size: 10px; fill: #2563eb; text-anchor: middle; }')
+    lines.append('  .gnd-label { font-size: 10px; fill: #666; text-anchor: middle; }')
+    lines.append('  .title { font-size: 16px; font-weight: bold; fill: #0f172a; text-anchor: middle; }')
+    lines.append('  .subtitle { font-size: 11px; fill: #64748b; text-anchor: middle; }')
+    lines.append('</style>')
+
+    # Title
+    lines.append(f'<text x="{svg_width//2}" y="25" class="title">VibeKey Wiring Diagram</text>')
+    lines.append(f'<text x="{svg_width//2}" y="42" class="subtitle">'
+                 f'3 MX switches + ESP32-S3</text>')
+
+    # ESP32 box
+    lines.append(f'<rect x="{esp_x}" y="{esp_y}" width="{esp_w}" height="{esp_h}" class="esp"/>')
+    lines.append(f'<text x="{esp_x + esp_w//2}" y="{esp_y + 25}" class="label" '
+                 f'font-weight="bold" font-size="13">ESP32-S3</text>')
+    lines.append(f'<text x="{esp_x + esp_w//2}" y="{esp_y + 42}" class="label" '
+                 f'font-size="10">DevKitC-1</text>')
+
+    # USB-C at bottom
+    usb_w, usb_h = 40, 14
+    usb_x = esp_x + (esp_w - usb_w) // 2
+    usb_y = esp_y + esp_h - 2
+    lines.append(f'<rect x="{usb_x}" y="{usb_y}" width="{usb_w}" height="{usb_h}" '
+                 f'fill="#e2e8f0" stroke="#94a3b8" stroke-width="1.5" rx="3"/>')
+    lines.append(f'<text x="{usb_x + usb_w//2}" y="{usb_y + 11}" '
+                 f'font-size="8" text-anchor="middle" fill="#475569">USB-C</text>')
+
+    # Draw 3 switches and wires
+    for i in range(3):
+        sx = sw_start_x + i * sw_spacing
+        sw_w, sw_h = 70, 50
+
+        # Switch box
+        lines.append(f'<rect x="{sx}" y="{sw_y}" width="{sw_w}" height="{sw_h}" class="switch"/>')
+        lines.append(f'<text x="{sx + sw_w//2}" y="{sw_y + 20}" class="label" '
+                     f'font-weight="bold">{btn_labels[i]}</text>')
+        lines.append(f'<text x="{sx + sw_w//2}" y="{sw_y + 35}" class="label" '
+                     f'font-size="9">MX Switch</text>')
+
+        # Pin A (signal) — left side of switch
+        pin_a_x = sx + 18
+        pin_a_y = sw_y + sw_h
+
+        # Pin B (GND) — right side of switch
+        pin_b_x = sx + sw_w - 18
+        pin_b_y = sw_y + sw_h
+
+        # Small circles for pins
+        lines.append(f'<circle cx="{pin_a_x}" cy="{pin_a_y}" r="3" fill="#2563eb"/>')
+        lines.append(f'<circle cx="{pin_b_x}" cy="{pin_b_y}" r="3" fill="#333"/>')
+
+        # Signal wire from pin A down to ESP32
+        gpio_target_x = esp_x + 30 + i * 45
+        gpio_target_y = esp_y
+        mid_y = sw_y + sw_h + 30 + i * 20
+        lines.append(f'<path d="M{pin_a_x},{pin_a_y} L{pin_a_x},{mid_y} '
+                     f'L{gpio_target_x},{mid_y} L{gpio_target_x},{gpio_target_y}" '
+                     f'class="wire-signal"/>')
+        lines.append(f'<text x="{gpio_target_x}" y="{gpio_target_y - 5}" '
+                     f'class="pin-label">{gpio_pins[i]}</text>')
+
+    # GND daisy-chain wire
+    gnd_y = sw_y + sw_h + 15
+    first_gnd_x = sw_start_x + 70 - 18
+    last_gnd_x = sw_start_x + 2 * sw_spacing + 70 - 18
+    gnd_esp_x = esp_x + esp_w - 20
+    gnd_esp_y = esp_y
+
+    # Vertical from each switch GND pin to the daisy chain line
+    for i in range(3):
+        pin_b_x = sw_start_x + i * sw_spacing + 70 - 18
+        pin_b_y = sw_y + 50
+        lines.append(f'<path d="M{pin_b_x},{pin_b_y} L{pin_b_x},{gnd_y}" class="wire-gnd"/>')
+
+    # Horizontal daisy chain
+    lines.append(f'<path d="M{first_gnd_x},{gnd_y} L{last_gnd_x},{gnd_y}" class="wire-gnd"/>')
+
+    # Down to ESP32 GND
+    lines.append(f'<path d="M{last_gnd_x},{gnd_y} L{gnd_esp_x},{gnd_y} '
+                 f'L{gnd_esp_x},{gnd_esp_y}" class="wire-gnd"/>')
+    lines.append(f'<text x="{gnd_esp_x}" y="{gnd_esp_y - 5}" class="gnd-label">GND</text>')
+
+    # Legend
+    leg_x, leg_y = 10, svg_height - 45
+    lines.append(f'<line x1="{leg_x}" y1="{leg_y}" x2="{leg_x+30}" y2="{leg_y}" '
+                 f'class="wire-signal"/>')
+    lines.append(f'<text x="{leg_x+35}" y="{leg_y+4}" font-size="10" fill="#1e293b">'
+                 f'Signal (GPIO)</text>')
+    lines.append(f'<line x1="{leg_x}" y1="{leg_y+18}" x2="{leg_x+30}" y2="{leg_y+18}" '
+                 f'class="wire-gnd"/>')
+    lines.append(f'<text x="{leg_x+35}" y="{leg_y+22}" font-size="10" fill="#1e293b">'
+                 f'Ground (GND)</text>')
+
+    lines.append('</svg>')
+
+    svg_content = "\n".join(lines)
+    with open(out_path, "w") as f:
+        f.write(svg_content)
+
+    print(f"  Wiring diagram saved to: {out_path}")
+    print(f"  Open in a browser or SVG viewer.")
+    print()
+
+
 def cmd_help(args=None):
     """Show help."""
     print("""
   vibekey — CLI for your VibeKey 3-button BLE keyboard
 
-  COMMANDS
+  GETTING STARTED
   ────────────────────────────────────────────────────
+  vibekey setup                Guided first-time setup wizard
 
-  vibekey setup                Guided first-time setup
-                               Installs tools, configures pins,
-                               flashes firmware, maps buttons.
-
+  FIRMWARE
+  ────────────────────────────────────────────────────
   vibekey flash                Build and upload firmware
     --env esp32                  Use original ESP32 (default: esp32s3)
     --build-only                 Build without uploading
     --monitor                    Open serial monitor after upload
+  vibekey build                Compile and export .bin files
+    --env esp32                  Target environment
 
+  KEY MAPPING
+  ────────────────────────────────────────────────────
   vibekey map                  Remap buttons (interactive)
     vibekey map mute vol_down vol_up
                                  Set all 3 buttons at once
     --get                        Print current mappings
 
-  vibekey status               Show device info and mappings
+  MACROS
+  ────────────────────────────────────────────────────
+  vibekey macro <btn> <steps>  Set a multi-key macro
+    vibekey macro 1 left_ctrl+c              Ctrl+C on button 1
+    vibekey macro 2 left_ctrl+a 0 left_ctrl+c  Select all, pause, copy
+    --get                        Show macro for a button
+    --clear                      Remove macro from a button
+
+  PROFILES
+  ────────────────────────────────────────────────────
+  vibekey profile              Show current profile
+  vibekey profile <n>          Switch to profile 0, 1, or 2
+                               (hold btn1+btn3 on boot to cycle)
+
+  TESTING
+  ────────────────────────────────────────────────────
+  vibekey test                 Simulate presses (reads from device)
+  vibekey test --offline       Simulate with default mappings (no device)
+
+  DEVICE MANAGEMENT
+  ────────────────────────────────────────────────────
+  vibekey status               Show device info, profile, and mappings
   vibekey monitor              Live serial output from device
   vibekey ports                List available serial ports
-  vibekey reset                Reset mappings to defaults
+  vibekey reset                Reset mappings and macros to defaults
     -y                           Skip confirmation
+
+  REFERENCE
+  ────────────────────────────────────────────────────
   vibekey keys                 Show all available key names
+  vibekey diagram              Generate wiring diagram SVG
+    -o path.svg                  Output path
 
   GLOBAL OPTIONS
   ────────────────────────────────────────────────────
@@ -750,11 +1222,13 @@ def cmd_help(args=None):
 
   EXAMPLES
   ────────────────────────────────────────────────────
-  vibekey setup                # first-time guided setup
-  vibekey map                  # interactive remapping
-  vibekey map f13 mute space   # set buttons from command line
-  vibekey status               # check what's mapped
-  vibekey flash --monitor      # reflash and watch serial output
+  vibekey setup                      # first-time guided setup
+  vibekey map f13 mute space         # set buttons from CLI
+  vibekey macro 1 left_ctrl+left_shift+m  # Discord mute on btn 1
+  vibekey profile 1                  # switch to profile 1
+  vibekey test --offline             # test without hardware
+  vibekey build                      # export firmware .bin
+  vibekey diagram                    # generate wiring SVG
 """)
 
 
@@ -771,7 +1245,7 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     # setup
-    sub = subparsers.add_parser("setup", help="Guided first-time setup")
+    subparsers.add_parser("setup", help="Guided first-time setup")
 
     # flash
     sub = subparsers.add_parser("flash", help="Build and upload firmware")
@@ -779,10 +1253,29 @@ def main():
     sub.add_argument("--build-only", action="store_true", help="Build without uploading")
     sub.add_argument("--monitor", action="store_true", help="Open serial monitor after")
 
+    # build
+    sub = subparsers.add_parser("build", help="Compile and export .bin files")
+    sub.add_argument("--env", default=None, help="PlatformIO environment")
+
     # map
     sub = subparsers.add_parser("map", help="Remap button keys")
-    sub.add_argument("keys", nargs="*", default=None, help="Key names (e.g. mute vol_down vol_up)")
+    sub.add_argument("keys", nargs="*", default=None, help="Key names")
     sub.add_argument("--get", action="store_true", help="Print current mappings")
+
+    # macro
+    sub = subparsers.add_parser("macro", help="Set multi-key macros")
+    sub.add_argument("button", type=int, help="Button number (1-3)")
+    sub.add_argument("steps", nargs="*", default=None, help="Macro steps (e.g. left_ctrl+c)")
+    sub.add_argument("--get", action="store_true", help="Show macro for button")
+    sub.add_argument("--clear", action="store_true", help="Clear macro for button")
+
+    # profile
+    sub = subparsers.add_parser("profile", help="Switch mapping profiles")
+    sub.add_argument("number", type=int, nargs="?", default=None, help="Profile number (0-2)")
+
+    # test
+    sub = subparsers.add_parser("test", help="Simulate button presses")
+    sub.add_argument("--offline", action="store_true", help="Simulate without device")
 
     # status
     subparsers.add_parser("status", help="Show device info and mappings")
@@ -801,6 +1294,10 @@ def main():
     # keys
     subparsers.add_parser("keys", help="Show available key names")
 
+    # diagram
+    sub = subparsers.add_parser("diagram", help="Generate wiring diagram SVG")
+    sub.add_argument("-o", "--output", default=None, help="Output SVG path")
+
     # help
     subparsers.add_parser("help", help="Show help")
 
@@ -809,12 +1306,17 @@ def main():
     commands = {
         "setup": cmd_setup,
         "flash": cmd_flash,
+        "build": cmd_build,
         "map": cmd_map,
+        "macro": cmd_macro,
+        "profile": cmd_profile,
+        "test": cmd_test,
         "status": cmd_status,
         "monitor": cmd_monitor,
         "ports": cmd_ports,
         "reset": cmd_reset,
         "keys": cmd_keys,
+        "diagram": cmd_diagram,
         "help": cmd_help,
     }
 
