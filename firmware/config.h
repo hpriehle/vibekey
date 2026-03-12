@@ -1,9 +1,9 @@
 /*
- * OneKey BLE Keyboard — User Configuration
- * =========================================
- * Edit this file to customize your key, pins, and behavior.
- * No need to touch one_key_keyboard.ino unless you want to
- * change the core logic.
+ * VibeKey BLE Keyboard — User Configuration
+ * ==========================================
+ * Edit this file to customize pins, Bluetooth name, and behavior.
+ * Key mappings are stored on the ESP32 and configured via the
+ * Python mapper tool — no need to reflash to change keys.
  */
 
 #ifndef CONFIG_H
@@ -12,15 +12,22 @@
 #include <BleKeyboard.h>
 
 // -----------------------------------------------------------------
+// NUMBER OF BUTTONS
+// -----------------------------------------------------------------
+#define NUM_BUTTONS     3
+
+// -----------------------------------------------------------------
 // PIN ASSIGNMENTS
 // -----------------------------------------------------------------
+// GPIO pins wired to each key switch (other switch pin goes to GND).
+// Change these to match your wiring.
 
-// GPIO pin wired to the key switch (other switch pin goes to GND)
-#define BUTTON_PIN      4
+#define BUTTON_PIN_1    4
+#define BUTTON_PIN_2    5
+#define BUTTON_PIN_3    6
 
 // GPIO pin for the status LED (set to -1 to disable)
-// The built-in LED on most ESP32-S3 DevKits is GPIO 48.
-// For original ESP32 DevKit, try GPIO 2.
+// ESP32-S3 DevKit built-in LED: GPIO 48. Original ESP32 DevKit: GPIO 2.
 #define LED_PIN         2
 
 // -----------------------------------------------------------------
@@ -28,7 +35,7 @@
 // -----------------------------------------------------------------
 
 // Device name shown in Bluetooth pairing (max 15 characters)
-#define BLE_DEVICE_NAME "OneKey"
+#define BLE_DEVICE_NAME "VibeKey"
 
 // Manufacturer name in BLE device info
 #define BLE_MANUFACTURER "DIY"
@@ -37,44 +44,25 @@
 #define BLE_BATTERY     100
 
 // -----------------------------------------------------------------
-// KEY ACTION — SINGLE PRESS
+// DEFAULT KEY MAPPINGS
 // -----------------------------------------------------------------
-// What to send when the key is pressed once.
+// These are used on first boot only. After that, mappings are stored
+// in flash and configured via the Python mapper tool or serial commands.
 //
-//   KEY_MEDIA_MUTE          Mute/unmute (Zoom, Teams, etc.)
-//   KEY_MEDIA_PLAY_PAUSE    Play/pause media
-//   KEY_MEDIA_VOLUME_UP     Volume up
-//   KEY_MEDIA_VOLUME_DOWN   Volume down
-//   KEY_MEDIA_NEXT_TRACK    Next track
-//   KEY_MEDIA_PREVIOUS_TRACK Previous track
-//   KEY_F13                 F13 (great for push-to-talk binds)
-//   KEY_F24                 F24 (another unused key for macros)
-//   KEY_RETURN              Enter
-//   KEY_ESC                 Escape
-//   'a'                     Letter a (any single character)
+// Key code reference:
+//   0xB0  KEY_RETURN            Enter
+//   0xB1  KEY_ESC               Escape
+//   0xB3  KEY_TAB               Tab
+//   0xCD  KEY_MEDIA_PLAY_PAUSE  Play/pause media
+//   0xE2  KEY_MEDIA_MUTE        Mute/unmute
+//   0xE9  KEY_MEDIA_VOLUME_UP   Volume up
+//   0xEA  KEY_MEDIA_VOLUME_DOWN Volume down
+//   0xF0  KEY_F1  ...  0xFB KEY_F12
+//   'a'-'z'                     Letters
 
-#define KEY_TO_SEND     KEY_MEDIA_MUTE
-
-// -----------------------------------------------------------------
-// KEY ACTION — LONG PRESS (hold > threshold)
-// -----------------------------------------------------------------
-// Set to true to enable a second action on long press.
-// When enabled, the single-press action fires on release (short tap),
-// and the long-press action fires after the threshold.
-
-#define LONG_PRESS_ENABLED   false
-#define LONG_PRESS_MS        500
-#define LONG_PRESS_KEY       KEY_MEDIA_PLAY_PAUSE
-
-// -----------------------------------------------------------------
-// KEY COMBO MODE
-// -----------------------------------------------------------------
-// Set to true to send a multi-key combo instead of a single key.
-// When enabled, KEY_TO_SEND is ignored — edit sendCombo() in the
-// .ino file to define your combo.
-// Default combo: Ctrl+Shift+M (Zoom mute toggle)
-
-#define USE_COMBO       false
+#define DEFAULT_KEY_1   KEY_MEDIA_MUTE
+#define DEFAULT_KEY_2   KEY_MEDIA_VOLUME_DOWN
+#define DEFAULT_KEY_3   KEY_MEDIA_VOLUME_UP
 
 // -----------------------------------------------------------------
 // DEBOUNCE

@@ -1,24 +1,24 @@
 # Hardware Assembly — Step by Step
 
-This guide walks you through every physical step of building the OneKey keyboard, from bare parts to a working device. No prior electronics experience needed.
+This guide walks you through every physical step of building the VibeKey 3-button keyboard, from bare parts to a working device. No prior electronics experience needed.
 
 ---
 
 ## What You Need on Your Workbench
 
-Gather everything before you start. There's nothing worse than being mid-solder and realizing you're missing a wire.
+Gather everything before you start.
 
 ### Parts
 
-| # | Part | Notes |
-|---|------|-------|
-| 1 | ESP32-S3 DevKitC-1 | Or any ESP32 dev board. The S3 is recommended — it has USB-C and better BLE. |
-| 2 | MX-compatible key switch | Cherry MX, Gateron, Kailh — any will work. Pick your favorite feel. |
-| 3 | MX-compatible keycap | 1u size (standard single key). |
-| 4 | USB-C cable | For power and initial programming. |
-| 5 | Two wires, ~3 inches each | 22–26 AWG. Solid core is easier for breadboards; stranded is easier to solder. |
-| 6 | (Optional) LED, 3mm or 5mm | Any color. For connection status feedback. |
-| 7 | (Optional) 220Ω resistor | Current limiter for the LED. |
+| # | Part | Qty | Notes |
+|---|------|-----|-------|
+| 1 | ESP32-S3 DevKitC-1 | 1 | Or any ESP32 dev board. The S3 is recommended — it has USB-C and better BLE. |
+| 2 | MX-compatible key switch | 3 | Cherry MX, Gateron, or Kailh. Any MX-compatible switch will work. Pick your favorite feel. |
+| 3 | MX-compatible keycap | 3 | 1u size (standard single key). |
+| 4 | USB-C cable | 1 | For power and initial programming. |
+| 5 | Wire, 22–26 AWG | ~18 inches total | You'll cut six ~3-inch pieces. Solid core is easier for breadboards; stranded is easier to solder. |
+| 6 | (Optional) LED, 3mm or 5mm | 1 | Any color. For connection status feedback. |
+| 7 | (Optional) 220Ω resistor | 1 | Current limiter for the LED. |
 
 ### Tools
 
@@ -36,7 +36,7 @@ Gather everything before you start. There's nothing worse than being mid-solder 
 
 ## Step 1: Understand the Key Switch
 
-Before wiring anything, take a moment to look at your MX switch.
+Before wiring anything, look at your MX switch.
 
 ```
         ┌──────────────────┐
@@ -58,206 +58,181 @@ Before wiring anything, take a moment to look at your MX switch.
 
 - MX switches have **two metal pins** on the bottom (some have additional plastic alignment pins — ignore those).
 - When you press the key, the two metal pins are **connected** (closed circuit). When released, they're **disconnected** (open circuit).
-- It doesn't matter which pin is "A" and which is "B" — a switch is just a momentary contact. There's no polarity.
+- It doesn't matter which pin is "A" and which is "B" — there's no polarity.
 
 ---
 
-## Step 2: Prototype on a Breadboard (Optional but Recommended)
+## Step 2: The Wiring Plan
 
-If you have a breadboard, test everything before soldering. This lets you verify the firmware works before committing to permanent connections.
+You have 3 switches and need 6 wires total. Each switch connects to its own GPIO pin and to GND. The GND wires can share a common ground — you can daisy-chain them (see below).
 
-### 2a. Insert the ESP32 into the breadboard
+### Connection Table
 
-- Place the ESP32 dev board straddling the center channel of the breadboard.
-- The pins on each side should sit in the breadboard holes.
-- Make sure the USB port is accessible and not blocked.
+| Switch   | Switch Pin A → | Switch Pin B → |
+|----------|----------------|----------------|
+| Button 1 | ESP32 **GPIO 4** | ESP32 **GND** |
+| Button 2 | ESP32 **GPIO 5** | ESP32 **GND** |
+| Button 3 | ESP32 **GPIO 6** | ESP32 **GND** |
+
+### Wiring Diagram
 
 ```
-     ┌──────────────────────────────────┐
-     │  o o o o o o o o o o o o o o o o │  ← breadboard row
-     │  ┌─────────────────────────────┐ │
-     │  │         ESP32 BOARD         │ │
-     │  │  [3V3] [GND] [GPIO4] ...   │ │
-     │  └─────────────────────────────┘ │
-     │  o o o o o o o o o o o o o o o o │  ← breadboard row
-     └──────────────────────────────────┘
+   SWITCH 1          SWITCH 2          SWITCH 3
+  ┌────────┐        ┌────────┐        ┌────────┐
+  │  [KC]  │        │  [KC]  │        │  [KC]  │
+  └──┬──┬──┘        └──┬──┬──┘        └──┬──┬──┘
+     │  │              │  │              │  │
+     │  │              │  │              │  │
+     │  └──────────────┼──┴──────────────┼──┴──── GND (shared)
+     │                 │                 │
+     ▼                 ▼                 ▼
+   GPIO 4           GPIO 5           GPIO 6
+
+                  ┌──────────────────────┐
+                  │      ESP32 Board     │
+                  │     ┌──────────┐     │
+                  │     │  USB-C   │     │
+                  └─────┴──────────┴─────┘
 ```
 
-### 2b. Wire the switch with jumper wires
+**Tip — shared GND:** Instead of running 3 separate GND wires back to the ESP32, you can connect all three switch GND pins together with a single wire running between them (daisy-chain), then run one wire from that chain to any GND pin on the ESP32. This saves wires and keeps things tidy.
 
-- Use a male-to-male jumper wire from **GPIO 4** on the ESP32 to **one pin** of the switch.
-- Use another jumper wire from **GND** on the ESP32 to the **other pin** of the switch.
-- The switch pins may not fit directly into a breadboard. You can either:
-  - Hold the jumper wires against the switch pins while testing, or
-  - Solder short leads onto the switch pins, then plug those into the breadboard.
-
-### 2c. Flash the firmware
-
-- Follow the software setup in the main README (Arduino IDE or PlatformIO).
-- Upload the firmware to the ESP32.
-- Open the Serial Monitor at 115200 baud.
-- You should see:
-  ```
-  =============================
-    OneKey BLE Keyboard v2.0
-  =============================
-  Button on GPIO 4
-  Initializing BLE...
-  BLE advertising started.
-  Waiting for connection...
-  ```
-
-### 2d. Test the button
-
-- Pair "OneKey" from your computer or phone's Bluetooth settings.
-- Press the switch — the Serial Monitor should print `Key DOWN` and `-> sending keystroke`.
-- Open a text editor and verify the keystroke arrives.
-
-If this all works, you're ready to solder the final build!
+```
+  Daisy-chain GND:
+  Switch1-GND ────── Switch2-GND ────── Switch3-GND ────── ESP32 GND
+```
 
 ---
 
-## Step 3: Solder the Wires to the Switch
+## Step 3: Prototype on a Breadboard (Recommended)
 
-Now we'll make permanent connections.
+Test everything before soldering.
 
-### 3a. Prepare the wires
+### 3a. Insert the ESP32 into the breadboard
 
-1. Cut two wires, each about **3 inches (8 cm)** long. A bit of extra length is fine — you can trim later.
-2. Strip about **5mm (3/16 inch)** of insulation from each end of each wire.
-3. (Optional) Slide a piece of heat-shrink tubing onto each wire now, before soldering. You'll shrink it later to cover the joint.
+Place the ESP32 dev board straddling the center channel. Make sure the USB port is accessible.
 
-### 3b. Tin the switch pins
+### 3b. Wire the switches with jumper wires
 
-1. Heat your soldering iron and let it reach temperature (~350°C / 660°F for leaded solder).
-2. Hold the switch with the pins facing up (or use helping hands / a vice).
-3. Touch the iron tip to one switch pin for 2 seconds, then touch solder to the pin (not the iron). A small blob of solder should coat the pin.
-4. Repeat for the other pin.
+For each of the 3 switches:
+- Use a jumper wire from the switch's **pin A** to the corresponding **GPIO** (4, 5, or 6).
+- Use a jumper wire from the switch's **pin B** to **GND**.
+
+Switch pins may not fit directly into a breadboard. You can hold jumper wires against the switch pins for testing, or solder short leads onto the pins.
+
+### 3c. Flash the firmware
+
+Upload the firmware (see README for Arduino IDE or PlatformIO instructions). Open Serial Monitor at 115200 baud. You should see:
 
 ```
-  SWITCH (bottom view)
-  ┌──────────────┐
-  │              │
-  │  (pin A) ●───── tiny solder blob
-  │              │
-  │  (pin B) ●───── tiny solder blob
-  │              │
-  └──────────────┘
+=============================
+  VibeKey BLE Keyboard v3.0
+=============================
+Loaded mappings: MAP:226,234,233
+Button 1 on GPIO 4 -> key code 226
+Button 2 on GPIO 5 -> key code 234
+Button 3 on GPIO 6 -> key code 233
+LED on GPIO 2
+Initializing BLE...
+BLE advertising started.
+Waiting for connection...
 ```
 
-### 3c. Solder the wires
+### 3d. Test each button
 
-1. Hold a stripped wire end against **pin A** of the switch.
-2. Touch the iron to both the wire and the pin simultaneously for 2 seconds. The solder on the pin should reflow and bond to the wire.
-3. Remove the iron and hold still for 3 seconds while it cools.
-4. Repeat for the second wire on **pin B**.
-5. Tug gently on each wire to confirm a solid joint.
+1. Pair "VibeKey" from your computer's Bluetooth settings.
+2. Press each switch — Serial Monitor should print `Button X DOWN` and `-> sending key code`.
+3. Test: Button 1 should mute, Button 2 should lower volume, Button 3 should raise volume.
 
-### 3d. Insulate (optional)
-
-- Slide the heat-shrink tubing over each solder joint and apply heat (lighter or heat gun) to shrink it snug.
+If it works, you're ready to solder the final build.
 
 ---
 
-## Step 4: Solder the Wires to the ESP32
+## Step 4: Solder the Wires to the Switches
 
-### 4a. Identify the pins
+### 4a. Prepare the wires
 
-Find these two pins on your ESP32 board. They're labeled on the silk screen (the white text printed on the board).
+1. Cut **six wires**, each about 3 inches (8 cm) long. Or four if you're daisy-chaining GND.
+2. Strip about 5mm of insulation from each end.
+3. (Optional) Slide heat-shrink tubing onto each wire before soldering.
 
-| Wire (from switch) | ESP32 Pin | Location |
-|---------------------|-----------|----------|
-| Wire from pin A | **GPIO 4** (labeled "4" or "IO4") | Varies by board — check your board's pinout diagram |
-| Wire from pin B | **GND** | Usually multiple GND pins — use any one |
+### 4b. Tin and solder each switch
 
-Most ESP32-S3 DevKitC-1 boards have GPIO 4 and GND on the same side, close together.
+For each of the 3 switches:
 
-### 4b. Solder or use headers
+1. **Tin the switch pins:** Touch the iron to a pin for 2 seconds, apply solder to create a small blob. Repeat for the other pin.
+2. **Solder the signal wire:** Hold a stripped wire end against **pin A**. Touch the iron to both wire and pin. The solder reflows and bonds. Hold still 3 seconds to cool.
+3. **Solder the GND wire:** Same technique on **pin B**.
+4. **Tug test:** Gently pull each wire to confirm a solid joint.
+5. **Insulate:** Slide heat-shrink over joints and apply heat.
 
-**Option A — Solder directly to header pins (recommended):**
-1. If your ESP32 has header pins already soldered on, wrap the stripped wire end around the header pin and solder it.
-2. This is the most secure connection.
+If daisy-chaining GND: solder a short wire from Switch 1's pin B to Switch 2's pin B, then from Switch 2's pin B to Switch 3's pin B, then one longer wire from any of those to ESP32 GND.
 
-**Option B — Solder to through-holes:**
-1. If your board has bare through-holes (no header pins), push the wire through from the top and solder on the bottom.
+---
 
-**Option C — Use DuPont connectors (no soldering):**
-1. If you have female DuPont jumper wires, crimp or solder your switch wires to DuPont connectors and plug them onto the header pins.
-2. Less secure but fully reversible.
+## Step 5: Solder the Wires to the ESP32
 
-```
-  ESP32 BOARD (top view)
-  ┌─────────────────────────┐
-  │                         │
-  │  ● ● ● ● ● ● ● ● ● ●  │ ← header pins
-  │            ↑   ↑        │
-  │          IO4  GND       │
-  │            │   │        │
-  │            │   └─── Wire from switch pin B
-  │            └─────── Wire from switch pin A
-  │                         │
-  │      ┌──────────┐      │
-  │      │  USB-C   │      │
-  └──────┴──────────┴──────┘
-```
+### 5a. Identify the pins
+
+Find these pins on your ESP32 board (labeled on the silk screen):
+
+| Wire From | ESP32 Pin |
+|-----------|-----------|
+| Switch 1 signal | **GPIO 4** (labeled "4" or "IO4") |
+| Switch 2 signal | **GPIO 5** (labeled "5" or "IO5") |
+| Switch 3 signal | **GPIO 6** (labeled "6" or "IO6") |
+| GND (shared or individual) | **GND** (any GND pin) |
+
+### 5b. Attach the wires
+
+**Option A — Solder to header pins (recommended):**
+Wrap the stripped wire around the header pin and solder.
+
+**Option B — Through-hole solder:**
+Push wire through the board's through-hole and solder on the bottom.
+
+**Option C — DuPont connectors (no soldering):**
+Crimp or solder your wires to female DuPont connectors and plug onto the header pins. Fully reversible.
 
 ---
 
 ## Step 5: Add a Status LED (Optional)
 
-An LED gives you visual feedback: blinking when searching for a Bluetooth connection, flashing on keypress.
+An LED gives visual feedback: slow blink = searching for BLE connection, flash = keypress registered.
 
-### 5a. Circuit
+### Circuit
 
 ```
   ESP32 GPIO 2 ──── [220Ω resistor] ──── LED (+/longer leg) ──── LED (-/shorter leg) ──── GND
 ```
 
-| Wire | From | To |
-|------|------|----|
-| Resistor lead 1 | GPIO 2 (or your chosen LED_PIN) | Resistor |
-| Resistor lead 2 | Resistor | LED anode (longer leg, +) |
-| LED cathode | LED shorter leg (-) | GND |
+### Solder it
 
-### 5b. Solder it
+1. Solder the 220Ω resistor to GPIO 2.
+2. Solder the other resistor lead to the LED's **longer leg** (anode, +).
+3. Solder a wire from the LED's **shorter leg** (cathode, -) to GND.
+4. Insulate joints with heat-shrink or electrical tape.
 
-1. Solder the 220Ω resistor to the GPIO 2 header pin (or use the same technique as the switch wires).
-2. Solder the other end of the resistor to the **longer leg** (anode, +) of the LED.
-3. Solder a wire from the **shorter leg** (cathode, -) of the LED to GND.
-4. Insulate exposed joints with heat-shrink or electrical tape.
+### Configure
 
-### 5c. Configure in firmware
-
-In `firmware/config.h`, make sure `LED_PIN` matches the GPIO you wired:
-
+In `firmware/config.h`, set `LED_PIN` to match your wiring:
 ```cpp
-#define LED_PIN  2    // GPIO 2 — change if you used a different pin
+#define LED_PIN  2    // change to your GPIO, or -1 to disable
 ```
-
-If you skip the LED, set `LED_PIN` to `-1` and no LED code will run.
 
 ---
 
-## Step 6: Print the Case
+## Step 6: Print or Build a Case
 
-### 6a. Export STL files from OpenSCAD
+The OpenSCAD source in `case/one_key_case.scad` was designed for a single key. For 3 keys, you'll need to modify it:
 
-1. Download and install [OpenSCAD](https://openscad.org) (free).
-2. Open `case/one_key_case.scad`.
-3. **Measure your ESP32 board** with calipers or a ruler and update the dimensions at the top of the file:
-   ```
-   board_width  = 28;    // your board's width in mm
-   board_length = 52;    // your board's length in mm
-   board_height = 12;    // tallest component on the board
-   ```
-4. Export the **base**:
-   - Comment out the `top_plate();` line (add `//` in front).
-   - Press F6 to render, then **File → Export as STL**. Save as `base.stl`.
-5. Export the **top plate**:
-   - Uncomment `top_plate();` and comment out `base();`.
-   - Press F6 to render, then export as `top_plate.stl`.
+1. Open in [OpenSCAD](https://openscad.org) (free).
+2. Widen the top plate to fit **three 14mm x 14mm cutouts** side by side, with ~2mm spacing between them.
+3. Widen the base to match.
+4. Measure your ESP32 board and update dimensions.
+5. Export base and top plate as STL files.
 
-### 6b. Slice and print
+### Print Settings
 
 | Setting | Value |
 |---------|-------|
@@ -265,97 +240,75 @@ If you skip the LED, set `LED_PIN` to `-1` and no LED code will run.
 | Infill | 20% |
 | Supports | None needed |
 | Material | PLA or PETG |
-| Base orientation | Upright (open side up) |
-| Top plate orientation | Flipped (flat top facing the bed) |
 
-Print time is roughly 30–60 minutes for both parts.
+### No 3D printer?
 
-### 6c. No 3D printer?
-
-Alternatives:
-- Use any small plastic box or enclosure — drill/cut a 14mm square hole in the top.
-- Use a thick piece of cardboard as a prototype case.
+- Use any small plastic box — cut three 14mm square holes in the top.
+- A piece of thick cardboard works for prototyping.
 - Order from an online 3D printing service.
 
 ---
 
 ## Step 7: Final Assembly
 
-### 7a. Insert the switch into the top plate
+### 7a. Insert switches into the top plate
 
-1. Orient the switch so the pins face downward.
-2. Align the switch body with the 14mm square cutout in the top plate.
-3. Push firmly until the switch clips snap into place. You should feel and hear a click.
-4. The switch should be held securely. If it's loose, apply a small dab of hot glue on the underside.
+1. Orient each switch with pins facing down.
+2. Align with the 14mm cutouts and push firmly until clips snap.
+3. Apply a dab of hot glue if any switch is loose.
 
 ```
-  TOP PLATE (cross section)
-  ┌───────┬──────────┬───────┐
-  │       │  SWITCH  │       │  ← switch clips into the plate
-  │       │  ┌────┐  │       │
-  │       │  │stem│  │       │
-  │       └──┴────┴──┘       │
-  │       ↑ clip  clip ↑     │
-  └──────────────────────────┘
-          pins hang below
+  TOP PLATE (top view)
+  ┌──────────────────────────────────────────┐
+  │   ┌────────┐  ┌────────┐  ┌────────┐    │
+  │   │ SWITCH │  │ SWITCH │  │ SWITCH │    │
+  │   │   1    │  │   2    │  │   3    │    │
+  │   └────────┘  └────────┘  └────────┘    │
+  └──────────────────────────────────────────┘
 ```
 
 ### 7b. Mount the ESP32 in the base
 
-1. Place the ESP32 board in the base with the USB-C port aligned to the cutout in the wall.
-2. The board should sit flat on the bottom of the case.
-3. Secure with a dab of hot glue on two corners, or use double-sided tape.
-4. Make sure no solder joints or wires on the bottom of the ESP32 short against anything.
-
-```
-  BASE (top view, looking down inside)
-  ┌──────────────────────────────┐
-  │  ┌────────────────────────┐  │
-  │  │                        │  │
-  │  │      ESP32 BOARD       │  │
-  │  │                        │  │
-  │  │   [hot glue corners]   │  │
-  │  └────────────────────────┘  │
-  │              ↓               │
-  │         ┌─────────┐         │
-  └─────────┤  USB-C  ├─────────┘
-            └─────────┘
-              (cutout in wall)
-```
+1. Place the ESP32 in the base with USB port aligned to the wall cutout.
+2. Secure with hot glue on two corners or double-sided tape.
 
 ### 7c. Route the wires
 
-1. The two wires from the switch (on the top plate) need to reach GPIO 4 and GND on the ESP32 (in the base).
-2. Fold the wires neatly so they don't bunch up or get pinched.
-3. Make sure no bare wire touches anything conductive on the ESP32 board.
+1. Connect switch wires to the ESP32 pins (GPIO 4, 5, 6, and GND).
+2. Fold wires neatly — no bare wire should touch anything conductive.
 
-### 7d. Close the case
+### 7d. Close the case and add keycaps
 
-1. Set the top plate on top of the base. The lip on the underside of the top plate should drop into the base walls.
-2. Press down gently — it should friction-fit snugly.
-3. If it's too loose, add a tiny bit of hot glue on the inside of the lip.
-4. If it's too tight, lightly sand the lip edges.
-
-### 7e. Add the keycap
-
-1. Place the keycap on the switch stem (the cross-shaped post sticking up through the top plate).
-2. Press down firmly until it seats — you should feel it snap on.
+1. Set the top plate onto the base.
+2. Press each keycap onto its switch stem.
 
 ---
 
-## Step 8: Power On and Pair
+## Step 8: Power On, Pair, and Remap
 
-1. Plug the USB-C cable into the ESP32 and into your computer (or a power bank).
-2. The LED (if installed) should start **slow-blinking** — this means BLE is advertising and waiting for a connection.
-3. On your computer, phone, or tablet:
-   - Go to **Bluetooth settings**.
-   - Look for a device called **"OneKey"**.
-   - Click/tap to pair. No PIN is required.
-4. Once paired, the LED should turn **solid off** (or stop blinking, depending on your LED mode).
-5. **Press the key!**
-   - The LED flashes briefly.
-   - The configured keystroke is sent to your device.
-   - Open a text editor to verify, or try it on a Zoom/Teams call for mute.
+### First boot
+
+1. Plug USB-C into the ESP32.
+2. LED slow-blinks (searching for connection).
+3. Go to Bluetooth settings → pair **"VibeKey"** → no PIN needed.
+4. Press each button to test (defaults: mute, vol down, vol up).
+
+### Remap your buttons
+
+With the ESP32 still plugged into USB:
+
+```bash
+pip install pyserial          # one-time
+python3 mapper/mapper.py      # opens interactive menu
+```
+
+Type `1`, `2`, or `3` to change a button. Type `k` to see all available keys. Your new mappings are saved on the ESP32 and persist across reboots.
+
+Or remap from the command line:
+
+```bash
+python3 mapper/mapper.py --set mute play_pause f13
+```
 
 ---
 
@@ -363,32 +316,29 @@ Alternatives:
 
 | Symptom | Check |
 |---------|-------|
-| LED doesn't light up at all | Verify LED_PIN in config.h matches your wiring. Check LED polarity (long leg = +). Check resistor is connected. |
-| "OneKey" doesn't appear in Bluetooth | Open Serial Monitor — is the firmware running? Try resetting the ESP32. Make sure BLE is enabled on your host device. |
-| Key press not detected (no "Key DOWN" in Serial Monitor) | Check wiring: use a multimeter to verify continuity between switch pins when pressed. Confirm BUTTON_PIN matches your wiring. |
-| Key detected in Serial Monitor but no keystroke on computer | BLE may not be paired. Remove the pairing and re-pair. Try a different host device to isolate the issue. |
-| Key fires twice or stutters | Increase DEBOUNCE_MS in config.h (try 80 or 100). |
-| Upload fails | Hold the BOOT button on the ESP32 while clicking Upload, release after upload starts. Verify correct board and port in Tools menu. |
-| Switch is loose in the top plate | Add hot glue around the switch clips. Or reprint with a slightly smaller cutout (try 13.9mm). |
-| Case doesn't fit your board | Re-measure your board and update the dimensions in one_key_case.scad. Add 0.5mm tolerance on each side. |
+| LED doesn't light up | Verify LED_PIN in config.h. Check LED polarity (long leg = +). Check resistor. |
+| "VibeKey" not in Bluetooth | Check Serial Monitor. Reset ESP32. Make sure BLE is on. |
+| One button not working | Check that specific GPIO wiring. Use Serial Monitor to see if press is detected. Swap to a known-working GPIO to isolate. |
+| Key fires but wrong action | Use the mapper tool to check/change mappings: `python3 mapper/mapper.py --get` |
+| Double-triggers | Increase DEBOUNCE_MS in config.h (try 80–100). |
+| Mapper can't find serial port | Use `python3 mapper/mapper.py --list-ports` to find your port, then `--port /dev/ttyUSB0`. |
+| Upload fails | Hold BOOT button while uploading. Verify board and port in Arduino IDE. |
 
 ---
 
 ## Finished!
 
-You now have a fully functional single-key Bluetooth keyboard. Here's what you built:
-
 ```
-  ┌──────────────────────────────┐
-  │          ┌────────┐          │
-  │          │KEYCAP  │          │
-  │          │  ████  │          │
-  │          └────────┘          │  ← Top plate with switch
-  │══════════════════════════════│
-  │  ┌────────────────────────┐  │
-  │  │      ESP32 + wires     │  │  ← Base with board
-  │  └────────────────────────┘  │
-  └───────────┤USB-C├───────────┘
+  ┌──────────────────────────────────────────┐
+  │   ┌──────┐   ┌──────┐   ┌──────┐        │
+  │   │ KC 1 │   │ KC 2 │   │ KC 3 │        │
+  │   │ MUTE │   │ VOL- │   │ VOL+ │        │
+  │   └──────┘   └──────┘   └──────┘        │  ← Top plate
+  │══════════════════════════════════════════│
+  │  ┌────────────────────────────────────┐  │
+  │  │          ESP32 + wires             │  │  ← Base
+  │  └────────────────────────────────────┘  │
+  └──────────────────┤USB-C├─────────────────┘
 ```
 
-To change what the key does, edit `firmware/config.h` and re-flash. No rewiring needed.
+To change what any button does, run `python3 mapper/mapper.py` — no reflashing needed.
