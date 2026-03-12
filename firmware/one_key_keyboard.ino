@@ -14,6 +14,8 @@
  *   - Multiple profiles (switch with serial or button combo)
  *   - Macros: one button can send a sequence of keys
  *   - Persistent storage in ESP32 flash (NVS)
+ *   - Battery level monitoring via ADC + voltage divider
+ *   - Deep sleep on inactivity with button-press wakeup
  *
  * Serial protocol (115200 baud):
  *   PING                — returns "PONG:vibekey"
@@ -39,6 +41,10 @@
 #include <BleKeyboard.h>
 #include <Preferences.h>
 #include "config.h"
+
+#if ENABLE_DEEP_SLEEP
+#include <esp_sleep.h>
+#endif
 
 // -- BLE KEYBOARD INSTANCE ------------------------------------
 BleKeyboard bleKeyboard(BLE_DEVICE_NAME, BLE_MANUFACTURER, BLE_BATTERY);
@@ -70,6 +76,14 @@ unsigned long ledOffTime   = 0;
 unsigned long lastBlinkToggle = 0;
 bool blinkState        = false;
 
+// -- ACTIVITY / SLEEP STATE -----------------------------------
+unsigned long lastActivityTime = 0;
+
+// -- BATTERY STATE --------------------------------------------
+#if ENABLE_BATTERY_MONITOR
+unsigned long lastBatteryRead = 0;
+#endif
+
 // -- SERIAL INPUT BUFFER --------------------------------------
 String serialBuffer = "";
 
@@ -88,6 +102,16 @@ void ledFlash() {
   ledOffTime = millis() + LED_FLASH_MS;
 #endif
 }
+
+// -- BATTERY READING -----------------------------------------
+#if ENABLE_BATTERY_MONITOR
+int readBatteryPercent() {
+  int raw = analogRead(BATTERY_PIN);
+  float voltage = (raw / 4095.0) * 3.3 * VDIV_RATIO;
+  int pct = (int)((voltage - BATT_MIN_V) / (BATT_MAX_V - BATT_MIN_V) * 100);
+  return constrain(pct, 0, 100);
+}
+#endif
 
 // -- PROFILE PERSISTENCE -------------------------------------
 
@@ -400,7 +424,7 @@ void handleSerialCommand(String cmd) {
 void setup() {
   Serial.begin(115200);
   Serial.println("=============================");
-  Serial.println("  VibeKey BLE Keyboard v4.0");
+  Serial.println("  VibeKey BLE Keyboard v5.0");
   Serial.println("=============================");
 
   // Load active profile number
@@ -451,6 +475,26 @@ void setup() {
   Serial.println("BLE advertising started.");
   Serial.println("Waiting for connection...");
 
+  // Configure deep sleep wakeup sources (all button pins, wake on LOW)
+#if ENABLE_DEEP_SLEEP
+  uint64_t wakeupMask = (1ULL << BUTTON_PIN_1) | (1ULL << BUTTON_PIN_2) | (1ULL << BUTTON_PIN_3);
+  esp_sleep_enable_ext1_wakeup(wakeupMask, ESP_EXT1_WAKEUP_ALL_LOW);
+  Serial.println("Deep sleep enabled (wakeup on any button press).");
+#endif
+
+  // Initialize activity timer
+  lastActivityTime = millis();
+
+#if ENABLE_BATTERY_MONITOR
+  // Take an initial battery reading
+  int battPct = readBatteryPercent();
+  bleKeyboard.setBatteryLevel(battPct);
+  lastBatteryRead = millis();
+  Serial.print("Battery: ");
+  Serial.print(battPct);
+  Serial.println("%");
+#endif
+
   // Check for profile-cycle combo: hold Button 1 + Button 3 during boot
   delay(200);
   if (digitalRead(buttonPins[0]) == LOW && digitalRead(buttonPins[NUM_BUTTONS - 1]) == LOW) {
@@ -481,6 +525,7 @@ void loop() {
     char c = Serial.read();
     if (c == '\n' || c == '\r') {
       if (serialBuffer.length() > 0) {
+        lastActivityTime = now;
         handleSerialCommand(serialBuffer);
         serialBuffer = "";
       }
@@ -503,6 +548,7 @@ void loop() {
 
       if (stableState[i] == LOW) {
         // Button i just pressed
+        lastActivityTime = now;
         Serial.print("Button ");
         Serial.print(i + 1);
         Serial.println(" DOWN");
@@ -551,6 +597,28 @@ void loop() {
   }
 #endif
 #endif // LED_PIN >= 0
+
+  // ---- Battery level reporting ----
+#if ENABLE_BATTERY_MONITOR
+  if ((now - lastBatteryRead) >= BATTERY_READ_INTERVAL_MS) {
+    lastBatteryRead = now;
+    int battPct = readBatteryPercent();
+    bleKeyboard.setBatteryLevel(battPct);
+    Serial.print("Battery: ");
+    Serial.print(battPct);
+    Serial.println("%");
+  }
+#endif
+
+  // ---- Deep sleep on inactivity ----
+#if ENABLE_DEEP_SLEEP
+  if ((now - lastActivityTime) >= SLEEP_TIMEOUT_MS) {
+    Serial.println("Inactivity timeout — entering deep sleep...");
+    Serial.flush();
+    ledSet(false);
+    esp_deep_sleep_start();
+  }
+#endif
 
   delay(1);
 }

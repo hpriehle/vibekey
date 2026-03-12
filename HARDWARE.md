@@ -19,6 +19,10 @@ Gather everything before you start.
 | 5 | Wire, 22–26 AWG | ~18 inches total | You'll cut six ~3-inch pieces. Solid core is easier for breadboards; stranded is easier to solder. |
 | 6 | (Optional) LED, 3mm or 5mm | 1 | Any color. For connection status feedback. |
 | 7 | (Optional) 220Ω resistor | 1 | Current limiter for the LED. |
+| 8 | (Optional) 3.7V LiPo battery | 1 | 500–1000mAh. JST connector recommended for easy disconnect. |
+| 9 | (Optional) TP4056 USB-C charging board | 1 | Must include protection circuit (DW01A + FS8205A or equivalent). |
+| 10 | (Optional) Slide switch (SPDT) | 1 | For power on/off control. |
+| 11 | (Optional) 100KΩ resistor | 2 | For voltage divider used in battery level monitoring. |
 
 ### Tools
 
@@ -101,6 +105,70 @@ You have 3 switches and need 6 wires total. Each switch connects to its own GPIO
   Daisy-chain GND:
   Switch1-GND ────── Switch2-GND ────── Switch3-GND ────── ESP32 GND
 ```
+
+### Battery Wiring (Optional)
+
+If you are adding a LiPo battery for portable use, wire the battery and charging circuit as follows.
+
+#### Connection Table
+
+| From | To |
+|------|----|
+| Battery + (red) | TP4056 **B+** |
+| Battery - (black) | TP4056 **B-** |
+| TP4056 **OUT+** | Slide switch center pin |
+| Slide switch outer pin | ESP32 **VIN** (or **5V**) |
+| TP4056 **OUT-** | ESP32 **GND** |
+| Battery + (red) | 100KΩ resistor #1 (one end) |
+| 100KΩ resistor #1 (other end) | 100KΩ resistor #2 (one end) + ESP32 **GPIO 7** |
+| 100KΩ resistor #2 (other end) | ESP32 **GND** |
+
+#### Wiring Diagram
+
+```
+                        USB-C charging cable
+                              │
+                              ▼
+                      ┌───────────────┐
+   ┌──── Battery + ───┤ B+       USB  │
+   │                  │   TP4056      │
+   │  ┌── Battery - ──┤ B-    Charge  │
+   │  │               │       Board   │
+   │  │               ├───────────────┤
+   │  │               │ OUT+    OUT-  │
+   │  │               └──┬────────┬───┘
+   │  │                  │        │
+   │  │            ┌─────┴─────┐  │
+   │  │            │  SLIDE SW │  │
+   │  │            │  (SPDT)   │  │
+   │  │            └─────┬─────┘  │
+   │  │                  │        │
+   │  │                  ▼        ▼
+   │  │               ESP32     ESP32
+   │  │                VIN       GND
+   │  │
+   │  │   Voltage Divider (battery monitoring):
+   │  │
+   │  │     Battery +
+   │  │        │
+   │  │   ┌────┴────┐
+   │  │   │  100KΩ  │  Resistor #1
+   │  │   └────┬────┘
+   │  │        ├──────────── ESP32 GPIO 7  (ADC input)
+   │  │   ┌────┴────┐
+   │  │   │  100KΩ  │  Resistor #2
+   │  │   └────┬────┘
+   │  │        │
+   │  └────────┴──────── GND
+   │
+   └─── (also connects to voltage divider top, see above)
+```
+
+> **How the battery circuit works:**
+> - The **TP4056 board** handles LiPo charging and battery protection automatically. It manages safe charging from USB-C, and the onboard protection circuit prevents over-discharge, over-charge, and short circuits.
+> - The **slide switch** sits between the TP4056 output and the ESP32 VIN pin. Flipping it off cuts power to the ESP32 without disconnecting the battery from the charger — so you can charge with the switch off.
+> - The **voltage divider** (two 100KΩ resistors) halves the battery voltage so it falls within the ESP32 ADC's safe input range (0–3.3V). The midpoint connects to GPIO 7, letting firmware read the battery level.
+> - **Charge via the TP4056's USB-C port**, not the ESP32's USB port, when running on battery. You can still plug into the ESP32's USB for serial/programming separately if needed.
 
 ---
 
@@ -323,6 +391,9 @@ python3 mapper/mapper.py --set mute play_pause f13
 | Double-triggers | Increase DEBOUNCE_MS in config.h (try 80–100). |
 | Mapper can't find serial port | Use `python3 mapper/mapper.py --list-ports` to find your port, then `--port /dev/ttyUSB0`. |
 | Upload fails | Hold BOOT button while uploading. Verify board and port in Arduino IDE. |
+| Battery not charging | Check that USB-C is plugged into the TP4056, not the ESP32. Verify B+/B- polarity. TP4056 red LED = charging, blue LED = full. |
+| ESP32 won't power from battery | Check slide switch is in the ON position. Measure voltage at VIN with a multimeter. |
+| Battery reads wrong level | Verify both 100KΩ resistors and the connection to GPIO 7. Check ADC calibration in firmware. |
 
 ---
 
