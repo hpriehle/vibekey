@@ -5,61 +5,56 @@
  *
  * Hardware:
  *   - ESP32 dev board (ESP32-S3 recommended)
- *   - MX-compatible mechanical key switch
- *   - Wire switch between GPIO 4 and GND
+ *   - MX-compatible mechanical key switch wired between BUTTON_PIN and GND
+ *   - (Optional) LED on LED_PIN for status feedback
  *
  * Library required:
  *   ESP32-BLE-Keyboard by T-vK
  *   https://github.com/T-vK/ESP32-BLE-Keyboard
  *
- * Instructions:
- *   1. Install the ESP32-BLE-Keyboard library (Add .ZIP Library)
- *   2. Select your ESP32 board in Tools -> Board
- *   3. Upload this sketch
- *   4. Pair "OneKey" from your device's Bluetooth settings
- *   5. Press the key!
+ * All user-configurable settings are in config.h.
  */
 
 #include <BleKeyboard.h>
+#include "config.h"
 
-// -- CONFIGURATION -------------------------------------------
-const int BUTTON_PIN = 4;           // GPIO pin for the key switch
-const int DEBOUNCE_MS = 50;         // Debounce delay in milliseconds
+// -- BLE KEYBOARD INSTANCE ------------------------------------
+BleKeyboard bleKeyboard(BLE_DEVICE_NAME, BLE_MANUFACTURER, BLE_BATTERY);
 
-// What to send when the key is pressed.
-// Change this to whatever you need!
-//
-// Common options:
-//   KEY_RETURN              -> Enter key
-//   KEY_MEDIA_MUTE          -> Mute/unmute microphone
-//   KEY_MEDIA_PLAY_PAUSE    -> Play/pause media
-//   KEY_MEDIA_VOLUME_UP     -> Volume up
-//   KEY_MEDIA_VOLUME_DOWN   -> Volume down
-//   KEY_MEDIA_NEXT_TRACK    -> Next track
-//   KEY_MEDIA_PREVIOUS_TRACK-> Previous track
-//   KEY_F13                 -> F13 (great for push-to-talk binds)
-//   KEY_F24                 -> F24 (another unused key for macros)
-//   'a'                     -> The letter 'a'
-//
-// For key combos (e.g., Ctrl+Shift+M), see the sendCombo()
-// function below.
+// -- BUTTON STATE ---------------------------------------------
+bool lastReading       = HIGH;   // Previous raw reading
+bool stableState       = HIGH;   // Debounced stable state
+unsigned long debounceStart = 0;
 
-const uint8_t KEY_TO_SEND = KEY_MEDIA_MUTE;
+// -- LONG PRESS STATE -----------------------------------------
+bool keyIsDown         = false;  // True while key is physically held
+bool longPressFired    = false;  // True if long-press already sent
+unsigned long pressStart = 0;    // When the key was pressed
 
-// Set to true to send a key combo instead of a single key
-const bool USE_COMBO = false;
+// -- LED STATE ------------------------------------------------
+bool ledOn             = false;
+unsigned long ledOffTime   = 0;  // When to turn LED off after flash
+unsigned long lastBlinkToggle = 0;
+bool blinkState        = false;
 
-// Bluetooth device name (max 15 characters)
-BleKeyboard bleKeyboard("OneKey", "DIY", 100);
+// -- HELPERS --------------------------------------------------
 
-// -- STATE ---------------------------------------------------
-bool lastButtonState = HIGH;        // HIGH = not pressed (pull-up)
-bool currentButtonState = HIGH;
-unsigned long lastDebounceTime = 0;
+void ledSet(bool on) {
+#if LED_PIN >= 0
+  digitalWrite(LED_PIN, on ? HIGH : LOW);
+  ledOn = on;
+#endif
+}
 
-// -- KEY COMBO FUNCTION --------------------------------------
-// Modify this if you want to send a multi-key combination.
-// This example sends Ctrl+Shift+M (Zoom mute toggle).
+void ledFlash() {
+#if LED_PIN >= 0
+  ledSet(true);
+  ledOffTime = millis() + LED_FLASH_MS;
+#endif
+}
+
+// Key combo — edit this for your custom multi-key shortcut.
+// Default: Ctrl+Shift+M (Zoom/Teams mute toggle)
 void sendCombo() {
   bleKeyboard.press(KEY_LEFT_CTRL);
   bleKeyboard.press(KEY_LEFT_SHIFT);
@@ -68,52 +63,143 @@ void sendCombo() {
   bleKeyboard.releaseAll();
 }
 
-// -- SETUP ---------------------------------------------------
+void sendKey(uint8_t key) {
+  if (USE_COMBO) {
+    sendCombo();
+  } else {
+    bleKeyboard.write(key);
+  }
+}
+
+// -- SETUP ----------------------------------------------------
 void setup() {
   Serial.begin(115200);
   Serial.println("=============================");
-  Serial.println("  OneKey BLE Keyboard v1.0");
+  Serial.println("  OneKey BLE Keyboard v2.0");
   Serial.println("=============================");
-  Serial.println("Initializing BLE...");
 
   pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+#if LED_PIN >= 0
+  pinMode(LED_PIN, OUTPUT);
+  ledSet(false);
+  Serial.print("LED on GPIO ");
+  Serial.println(LED_PIN);
+#endif
+
+  Serial.print("Button on GPIO ");
+  Serial.println(BUTTON_PIN);
+  Serial.println("Initializing BLE...");
+
   bleKeyboard.begin();
 
   Serial.println("BLE advertising started.");
   Serial.println("Waiting for connection...");
 }
 
-// -- MAIN LOOP -----------------------------------------------
+// -- MAIN LOOP ------------------------------------------------
 void loop() {
+  unsigned long now = millis();
+  bool connected = bleKeyboard.isConnected();
+
+  // ---- Read and debounce the switch ----
   bool reading = digitalRead(BUTTON_PIN);
 
-  // Reset debounce timer on any state change
-  if (reading != lastButtonState) {
-    lastDebounceTime = millis();
+  if (reading != lastReading) {
+    debounceStart = now;
   }
+  lastReading = reading;
 
-  // Only act after the debounce period has elapsed
-  if ((millis() - lastDebounceTime) > DEBOUNCE_MS) {
-    if (reading != currentButtonState) {
-      currentButtonState = reading;
+  if ((now - debounceStart) > DEBOUNCE_MS && reading != stableState) {
+    stableState = reading;
 
-      // Key was just pressed (LOW because of pull-up to GND wiring)
-      if (currentButtonState == LOW) {
-        if (bleKeyboard.isConnected()) {
-          Serial.println("Key pressed -> sending keystroke");
+    if (stableState == LOW) {
+      // Key just pressed
+      keyIsDown = true;
+      longPressFired = false;
+      pressStart = now;
+      Serial.println("Key DOWN");
 
-          if (USE_COMBO) {
-            sendCombo();
-          } else {
-            bleKeyboard.write(KEY_TO_SEND);
-          }
-        } else {
-          Serial.println("Key pressed, but BLE not connected.");
-        }
+#if !LONG_PRESS_ENABLED
+      // Immediate fire when long-press is disabled
+      if (connected) {
+        Serial.println("  -> sending keystroke");
+        sendKey(KEY_TO_SEND);
+        ledFlash();
+      } else {
+        Serial.println("  -> BLE not connected");
       }
+#endif
+
+    } else {
+      // Key just released
+      Serial.println("Key UP");
+
+#if LONG_PRESS_ENABLED
+      if (!longPressFired && connected) {
+        // Short press — fire on release
+        unsigned long held = now - pressStart;
+        Serial.print("  -> short press (");
+        Serial.print(held);
+        Serial.println("ms) -> sending single key");
+        sendKey(KEY_TO_SEND);
+        ledFlash();
+      }
+#endif
+
+      keyIsDown = false;
+      longPressFired = false;
     }
   }
 
-  lastButtonState = reading;
-  delay(1);  // Small delay to reduce CPU usage
+  // ---- Long-press detection (while held) ----
+#if LONG_PRESS_ENABLED
+  if (keyIsDown && !longPressFired && (now - pressStart) >= LONG_PRESS_MS) {
+    longPressFired = true;
+    if (connected) {
+      Serial.println("  -> LONG press -> sending long-press key");
+      bleKeyboard.write(LONG_PRESS_KEY);
+      ledFlash();
+    }
+  }
+#endif
+
+  // ---- LED management ----
+#if LED_PIN >= 0
+  // Turn off flash LED after duration
+  if (ledOffTime > 0 && now >= ledOffTime) {
+    ledOffTime = 0;
+    // Only turn off if we're not in connection-solid mode
+#if LED_MODE == LED_MODE_KEYPRESS
+    ledSet(false);
+#elif LED_MODE == LED_MODE_CONNECTION
+    ledSet(connected);
+#elif LED_MODE == LED_MODE_BOTH
+    if (connected) {
+      ledSet(false);
+    }
+    // If disconnected, the blink loop below will take over
+#endif
+  }
+
+#if LED_MODE == LED_MODE_CONNECTION
+  if (ledOffTime == 0) {
+    ledSet(connected);
+  }
+#elif LED_MODE == LED_MODE_BOTH
+  if (!connected && ledOffTime == 0) {
+    // Slow blink while disconnected
+    if ((now - lastBlinkToggle) >= LED_BLINK_MS) {
+      lastBlinkToggle = now;
+      blinkState = !blinkState;
+      ledSet(blinkState);
+    }
+  } else if (connected && ledOffTime == 0) {
+    ledSet(false);
+  }
+#endif
+
+#endif // LED_PIN >= 0
+
+  delay(1);
 }
