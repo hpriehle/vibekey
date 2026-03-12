@@ -111,4 +111,33 @@
 // Slow-blink interval (ms) when BLE is disconnected
 #define LED_BLINK_MS    1000
 
+// -----------------------------------------------------------------
+// BATTERY MONITORING
+// -----------------------------------------------------------------
+// Enable/disable battery monitoring (1 = on, 0 = off)
+#define ENABLE_BATTERY_MONITOR  1
+
+// ADC-capable GPIO pin connected to the voltage divider midpoint
+#define BATTERY_PIN     7
+
+// Voltage divider ratio (e.g. 2.0 for two equal 100K resistors)
+#define VDIV_RATIO      2.0
+
+// Battery voltage range (3.0 V empty, 4.2 V fully charged)
+#define BATT_MIN_V      3.0
+#define BATT_MAX_V      4.2
+
+// How often to sample battery voltage (ms)
+#define BATTERY_READ_INTERVAL_MS  30000
+
+// -----------------------------------------------------------------
+// DEEP SLEEP
+// -----------------------------------------------------------------
+// Enable/disable deep sleep on inactivity (1 = on, 0 = off)
+#define ENABLE_DEEP_SLEEP       1
+
+// Enter deep sleep after this many ms of no button presses or
+// serial commands (default: 10 minutes)
+#define SLEEP_TIMEOUT_MS        (10 * 60 * 1000UL)
+
 #endif // CONFIG_H
